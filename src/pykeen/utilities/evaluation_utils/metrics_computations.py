@@ -251,8 +251,8 @@ def compute_metric_results(
             all_pos_triples_hashed=all_pos_triples_hashed,
         )
 
-        ranks.append(rank_of_positive_subject_based)
-        ranks.append(rank_of_positive_object_based)
+        ranks.append(1 / rank_of_positive_subject_based)
+        ranks.append(1 / rank_of_positive_object_based)
 
         # Compute hits@k for k in {1,3,5,10}
         update_hits_at_k(
