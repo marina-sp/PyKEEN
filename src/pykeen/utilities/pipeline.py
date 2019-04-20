@@ -86,6 +86,7 @@ class Pipeline(object):
             if self.seed is not None:
                 torch.manual_seed(self.seed)
 
+            print(self.config)
             kge_model: Module = get_kge_model(config=self.config)
 
             batch_size = self.config[pkc.BATCH_SIZE]
@@ -108,11 +109,13 @@ class Pipeline(object):
 
             if self.is_evaluation_required:
                 log.info("-------------Start Evaluation-------------")
+
                 metric_results = compute_metric_results(
                     all_entities=all_entities,
                     kg_embedding_model=kge_model,
                     mapped_train_triples=mapped_pos_train_triples,
                     mapped_test_triples=mapped_pos_test_triples,
+                    batch_size=self.config['test_batch_size'],
                     device=self.device,
                     filter_neg_triples=self.config[pkc.FILTER_NEG_TRIPLES],
                 )

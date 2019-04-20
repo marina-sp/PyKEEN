@@ -4,14 +4,12 @@
 
 import logging
 import timeit
+from tqdm import tqdm
 from dataclasses import dataclass
 from typing import Callable, Dict, Hashable, Iterable, List, Optional, Tuple
 
 import numpy as np
 import torch
-from tqdm import tqdm
-
-from ...constants import EMOJI
 
 log = logging.getLogger(__name__)
 
@@ -82,7 +80,7 @@ def _filter_corrupted_triples(
 
     if mask.size == 0:
         raise Exception("User selected filtered metric computation, but all corrupted triples exists"
-                        "also a positive triples.")
+                        "also as positive triples.")
     corrupted_object_based = corrupted_object_based[mask]
 
     return corrupted_subject_based, corrupted_object_based
@@ -90,16 +88,17 @@ def _filter_corrupted_triples(
 
 def _compute_filtered_rank(
         kg_embedding_model,
-        pos_triple,
+        score_of_positive,
         corrupted_subject_based,
         corrupted_object_based,
+        batch_size,
         device,
         all_pos_triples_hashed,
 ) -> Tuple[int, int]:
     """
 
     :param kg_embedding_model:
-    :param pos_triple:
+    :param score_of_positive:
     :param corrupted_subject_based:
     :param corrupted_object_based:
     :param device:
@@ -112,9 +111,10 @@ def _compute_filtered_rank(
 
     return _compute_rank(
         kg_embedding_model=kg_embedding_model,
-        pos_triple=pos_triple,
+        score_of_positive=score_of_positive,
         corrupted_subject_based=corrupted_subject_based,
         corrupted_object_based=corrupted_object_based,
+        batch_size=batch_size,
         device=device,
         all_pos_triples_hashed=all_pos_triples_hashed,
     )
@@ -122,53 +122,59 @@ def _compute_filtered_rank(
 
 def _compute_rank(
         kg_embedding_model,
-        pos_triple,
+        score_of_positive,
         corrupted_subject_based,
         corrupted_object_based,
+        batch_size,
         device,
         all_pos_triples_hashed=None,
 ) -> Tuple[int, int]:
     """
 
     :param kg_embedding_model:
-    :param pos_triple:
+    :param score_of_positive:
     :param corrupted_subject_based:
     :param corrupted_object_based:
     :param device:
     :param all_pos_triples_hashed: This parameter isn't used but is necessary for compatability
     """
-    scores_of_corrupted_subjects = kg_embedding_model.predict(corrupted_subject_based)
-    scores_of_corrupted_objects = kg_embedding_model.predict(corrupted_object_based)
+    corrupted_scores = np.ndarray((len(corrupted_subject_based)+len(corrupted_object_based),1))
+    #print("num of corrupted: ", len(corrupted_scores), corrupted_scores)
+    for i, batch in enumerate(_split_list_in_batches(
+            torch.cat([corrupted_subject_based, corrupted_object_based], dim=0),
+            batch_size)):
+        corrupted_scores[i * batch_size: (i + 1) * batch_size] = kg_embedding_model.predict(batch)
 
-    pos_triple = np.array(pos_triple)
-    pos_triple = np.expand_dims(a=pos_triple, axis=0)
-    pos_triple = torch.tensor(pos_triple, dtype=torch.long, device=device)
-
-    score_of_positive = kg_embedding_model.predict(pos_triple)
+    scores_of_corrupted_subjects = corrupted_scores[:len(corrupted_subject_based)]
+    scores_of_corrupted_objects = corrupted_scores[len(corrupted_subject_based):]
 
     scores_subject_based = np.append(arr=scores_of_corrupted_subjects, values=score_of_positive)
-    indice_of_pos_subject_based = scores_subject_based.size - 1
+    index_of_pos_subject_based = scores_subject_based.size - 1
 
     scores_object_based = np.append(arr=scores_of_corrupted_objects, values=score_of_positive)
-    indice_of_pos_object_based = scores_object_based.size - 1
+    index_of_pos_object_based = scores_object_based.size - 1
+
+
 
     _, sorted_score_indices_subject_based = torch.sort(torch.tensor(scores_subject_based, dtype=torch.float),
-                                                       descending=False)
+                                                       descending=kg_embedding_model.prob_mode)
     sorted_score_indices_subject_based = sorted_score_indices_subject_based.cpu().numpy()
 
     _, sorted_score_indices_object_based = torch.sort(torch.tensor(scores_object_based, dtype=torch.float),
-                                                      descending=False)
+                                                      descending=kg_embedding_model.prob_mode)
     sorted_score_indices_object_based = sorted_score_indices_object_based.cpu().numpy()
 
     # Get index of first occurrence that fulfills the condition
-    rank_of_positive_subject_based = np.where(sorted_score_indices_subject_based == indice_of_pos_subject_based)[0][0]
-    rank_of_positive_object_based = np.where(sorted_score_indices_object_based == indice_of_pos_object_based)[0][0]
+    rank_of_positive_subject_based = np.where(sorted_score_indices_subject_based == index_of_pos_subject_based)[0][0]
+    rank_of_positive_object_based = np.where(sorted_score_indices_object_based == index_of_pos_object_based)[0][0]
 
     return (
         rank_of_positive_subject_based,
         rank_of_positive_object_based,
     )
 
+def _split_list_in_batches(input_list, batch_size):
+    return [input_list[i:i + batch_size] for i in range(0, len(input_list), batch_size)]
 
 @dataclass
 class MetricResults:
@@ -183,11 +189,10 @@ def compute_metric_results(
         kg_embedding_model,
         mapped_train_triples,
         mapped_test_triples,
+        batch_size,
         device,
         filter_neg_triples=False,
-        ks: Optional[List[int]] = None,
-        *,
-        use_tqdm: bool = True,
+        ks: Optional[List[int]] = None
 ) -> MetricResults:
     """Compute the metric results.
 
@@ -198,7 +203,6 @@ def compute_metric_results(
     :param device:
     :param filter_neg_triples:
     :param ks:
-    :param use_tqdm: Should a progress bar be shown?
     :return:
     """
     start = timeit.default_timer()
@@ -220,9 +224,17 @@ def compute_metric_results(
         _compute_rank
     )
 
-    if use_tqdm:
-        mapped_test_triples = tqdm(mapped_test_triples, desc=f'{EMOJI} corrupting triples')
-    for pos_triple in mapped_test_triples:
+    all_scores = np.ndarray((len(mapped_test_triples),1))
+
+    all_triples = torch.tensor(mapped_test_triples, dtype=torch.long, device=device)
+
+    # predict all triples
+    for i, batch in enumerate(_split_list_in_batches(all_triples, batch_size)):
+        predictions = kg_embedding_model.predict(batch)
+        all_scores[i*batch_size: (i+1)*batch_size] = predictions
+
+    # Corrupt triples
+    for i, pos_triple in enumerate(tqdm(mapped_test_triples)):
         corrupted_subject_based, corrupted_object_based = _create_corrupted_triples(
             triple=pos_triple,
             all_entities=all_entities,
@@ -231,9 +243,10 @@ def compute_metric_results(
 
         rank_of_positive_subject_based, rank_of_positive_object_based = compute_rank_fct(
             kg_embedding_model=kg_embedding_model,
-            pos_triple=pos_triple,
+            score_of_positive=all_scores[i],
             corrupted_subject_based=corrupted_subject_based,
             corrupted_object_based=corrupted_object_based,
+            batch_size=batch_size,
             device=device,
             all_pos_triples_hashed=all_pos_triples_hashed,
         )
