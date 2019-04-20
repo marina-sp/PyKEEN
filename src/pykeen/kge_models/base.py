@@ -62,6 +62,9 @@ class BaseModule(nn.Module):
         # Device selection
         self.device = config.get_device()
 
+        # Output type (distance or probability)
+        self.prob_mode = False
+
         # Loss
         self.margin_loss = config.margin_loss
         self.criterion = nn.MarginRankingLoss(
@@ -76,6 +79,7 @@ class BaseModule(nn.Module):
         self.num_relations = config.number_relations
         #: The dimension of the embeddings to generate
         self.embedding_dim = config.embedding_dimension
+
 
         self.entity_embeddings = nn.Embedding(
             self.num_entities,

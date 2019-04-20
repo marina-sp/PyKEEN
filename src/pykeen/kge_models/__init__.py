@@ -37,6 +37,7 @@ from pykeen.kge_models.trans_d import TransD  # noqa: F401
 from pykeen.kge_models.trans_e import TransE  # noqa: F401
 from pykeen.kge_models.trans_h import TransH  # noqa: F401
 from pykeen.kge_models.trans_r import TransR  # noqa: F401
+from pykeen.kge_models.region import Region  # noqa: F401
 from pykeen.kge_models.unstructured_model import UnstructuredModel  # noqa: F401
 from pykeen.kge_models.utils import get_kge_model  # noqa: F401
 
@@ -51,5 +52,6 @@ __all__ = [
     'RESCAL',
     'ERMLP',
     'DistMult',
+    'Region'
     'get_kge_model',
 ]

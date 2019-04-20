@@ -39,6 +39,12 @@ DISTMULT_NAME = 'DistMult'
 ERMLP_NAME = 'ERMLP'
 CONV_E_NAME = 'ConvE'
 RESCAL_NAME = 'RESCAL'
+REGION_NAME = 'Region'
+
+# Region related
+# TODO: move down
+RADIUS_INITIAL_VALUE = 'init_radius'
+
 
 # Evaluator
 EVALUATOR = 'evaluator'
