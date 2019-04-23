@@ -34,7 +34,6 @@ class RegionConfig:
         """Generate an instance from a dictionary."""
         return cls(
             lp_norm=config[NORM_FOR_NORMALIZATION_OF_ENTITIES],
-            scoring_function_norm=config[SCORING_FUNCTION_NORM],
             radius_init=config[RADIUS_INITIAL_VALUE],
             reg_lambda=config['reg_lambda']
         )
@@ -119,18 +118,22 @@ class Region(BaseModule):
             norms.view(self.num_entities, 1).expand_as(self.entity_embeddings.weight))
         # TODO: what is going on
 
-        positive_scores = - torch.log(self._score_triples(batch_positives))
-        negative_scores = - torch.log(1 - self._score_triples(batch_negatives))
+        pos = self._score_triples(batch_positives)
+        positive_scores = - torch.log(pos)
+        neg = 1 - self._score_triples(batch_negatives)
+        if (pos < 0).any() or (neg < 0).any():
+            print("negative input to log function")
+        if (pos == 0).any():
+            print("zero input from pos to log function")
+        if (neg == 0).any():
+            print("zero input from neg to log function")
+        negative_scores = - torch.log(neg)
         loss = self._compute_loss(positive_scores=positive_scores, negative_scores=negative_scores)
         return loss
 
     def _compute_loss(self, positive_scores, negative_scores):
         y = np.repeat([-1], repeats=positive_scores.shape[0])
         y = torch.tensor(y, dtype=torch.float, device=self.device)
-
-        # Scores for the positive and negative triples
-        positive_scores = torch.tensor(positive_scores, dtype=torch.float, device=self.device)
-        negative_scores = torch.tensor(negative_scores, dtype=torch.float, device=self.device)
 
         loss = self.criterion(positive_scores, - negative_scores, y)
         #print("loss: %0.2f"%loss)
