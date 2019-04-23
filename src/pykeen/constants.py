@@ -110,6 +110,7 @@ OUTPUT_DIREC = 'output_direc'
 # Pipeline outcome parameters
 TRAINED_MODEL = 'trained_model'
 LOSSES = 'losses'
+VAL_LOSSES = 'validation_losses'
 ENTITY_TO_EMBEDDING = 'entity_to_embedding'
 RELATION_TO_EMBEDDING = 'relation_to_embedding'
 CONFIG = 'configuration'

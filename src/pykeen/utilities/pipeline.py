@@ -42,6 +42,9 @@ class Pipeline(object):
         )
         self.device = torch.device(self.device_name)
 
+        # set num of entities
+        _ = self._get_train_and_test_triples()
+
     @staticmethod
     def _use_hpo(config):
         return config[pkc.EXECUTION_MODE] == pkc.HPO_MODE
@@ -59,6 +62,7 @@ class Pipeline(object):
 
             (trained_model,
              loss_per_epoch,
+             valloss_per_epoch,
              entity_label_to_embedding,
              relation_label_to_embedding,
              metric_results,
@@ -69,6 +73,7 @@ class Pipeline(object):
                 rel_to_id=self.relation_label_to_id,
                 config=self.config,
                 device=self.device,
+                batch_size=self.config[pkc.BATCH_SIZE],
                 seed=self.seed,
             )
         else:  # Training Mode
@@ -94,7 +99,7 @@ class Pipeline(object):
             learning_rate = self.config[pkc.LEARNING_RATE]
 
             log.info("-------------Train KG Embeddings-------------")
-            trained_model, loss_per_epoch = train_kge_model(
+            trained_model, loss_per_epoch, valloss_per_epoch = train_kge_model(
                 kge_model=kge_model,
                 all_entities=all_entities,
                 learning_rate=learning_rate,
@@ -145,6 +150,7 @@ class Pipeline(object):
         return _make_results(
             trained_model=trained_model,
             loss_per_epoch=loss_per_epoch,
+            valloss_per_epoch=valloss_per_epoch,
             entity_to_embedding=entity_label_to_embedding,
             relation_to_embedding=relation_label_to_embedding,
             metric_results=metric_results,
@@ -246,6 +252,7 @@ def _load_data_helper(path: str) -> np.ndarray:
 def _make_results(
         trained_model,
         loss_per_epoch,
+        valloss_per_epoch,
         entity_to_embedding: Mapping[str, np.ndarray],
         relation_to_embedding: Mapping[str, np.ndarray],
         metric_results: Optional[MetricResults],
@@ -256,6 +263,7 @@ def _make_results(
     results = OrderedDict()
     results[pkc.TRAINED_MODEL] = trained_model
     results[pkc.LOSSES] = loss_per_epoch
+    results[pkc.VAL_LOSSES] = valloss_per_epoch
     results[pkc.ENTITY_TO_EMBEDDING]: Mapping[str, np.ndarray] = entity_to_embedding
     results[pkc.RELATION_TO_EMBEDDING]: Mapping[str, np.ndarray] = relation_to_embedding
     if metric_results is not None:

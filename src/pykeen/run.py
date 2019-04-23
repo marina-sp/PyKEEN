@@ -14,7 +14,7 @@ import torch
 
 from pykeen.constants import (
     ENTITY_TO_EMBEDDING, ENTITY_TO_ID, EVAL_SUMMARY, FINAL_CONFIGURATION, LOSSES, OUTPUT_DIREC, RELATION_TO_EMBEDDING,
-    RELATION_TO_ID, TRAINED_MODEL, VERSION,
+    RELATION_TO_ID, TRAINED_MODEL, VERSION, VAL_LOSSES
 )
 from pykeen.utilities.pipeline import Pipeline
 
@@ -109,6 +109,9 @@ def export_experimental_artifacts(
 
     with open(os.path.join(output_directory, 'losses.json'), 'w') as file:
         json.dump(results[LOSSES], file, indent=2, sort_keys=True)
+
+    with open(os.path.join(output_directory, 'val_losses.json'), 'w') as file:
+        json.dump(results[VAL_LOSSES], file, indent=2, sort_keys=True)
 
     eval_summary = results.get(EVAL_SUMMARY)
     if eval_summary is not None:

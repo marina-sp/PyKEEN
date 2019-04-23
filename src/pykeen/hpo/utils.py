@@ -12,7 +12,7 @@ __all__ = [
     'HPOptimizer',
 ]
 
-HPOptimizerResult = Tuple[Module, List[float], Any, Any, Any, Any]
+HPOptimizerResult = Tuple[Module, List[float], List[float], Any, Any, Any, Any]
 
 
 class HPOptimizer(ABC):

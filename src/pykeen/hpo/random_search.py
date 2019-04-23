@@ -64,7 +64,8 @@ class RandomSearch(HPOptimizer):
 
         trained_kge_models: List[Module] = []
         epoch_losses: List[List[float]] = []
-        hits_at_k_evaluations: List[float] = []
+        epoch_val_losses: List[List[float]] = []
+        evaluation_criterion: List[float] = []
         entity_to_ids: List[Dict[int, str]] = []
         rel_to_ids: List[Dict[int, str]] = []
         models_params: List[Dict] = []
@@ -95,15 +96,15 @@ class RandomSearch(HPOptimizer):
 
             all_entities = np.array(list(entity_to_id.values()))
 
-            trained_kge_model, epoch_loss = train_kge_model(
+            trained_kge_model, epoch_loss, val_loss = train_kge_model(
                 kge_model=kge_model,
                 all_entities=all_entities,
                 learning_rate=kge_model_config[pkc.LEARNING_RATE],
                 num_epochs=kge_model_config[pkc.NUM_EPOCHS],
                 batch_size=kge_model_config[pkc.BATCH_SIZE],
                 pos_triples=mapped_train_triples,
-                device=device,
                 seed=seed,
+                device=device,
                 tqdm_kwargs=dict(leave=False),
             )
 
@@ -112,7 +113,9 @@ class RandomSearch(HPOptimizer):
                 all_entities=all_entities,
                 kg_embedding_model=trained_kge_model,
                 mapped_train_triples=mapped_train_triples,
-                mapped_test_triples=mapped_test_triples,
+                mapped_pos_test_triples=mapped_pos_test_triples,
+                mapped_neg_test_triples=mapped_neg_test_triples,
+                batch_size=kge_model_config[pkc.BATCH_SIZE],
                 device=device,
             )
 
@@ -121,15 +124,17 @@ class RandomSearch(HPOptimizer):
 
             trained_kge_models.append(trained_kge_model)
             epoch_losses.append(epoch_loss)
+            epoch_val_losses.append(val_loss)
 
-            hits_at_k_evaluation = metric_results.hits_at_k[k_evaluation]
-            hits_at_k_evaluations.append(hits_at_k_evaluation)
+            evaluation_value = metric_results.accuracy
+            evaluation_criterion.append(evaluation_value)
 
-        index_of_max = int(np.argmax(a=hits_at_k_evaluations))
+        index_of_max = int(np.argmax(a=evaluation_criterion))
 
         return (
             trained_kge_models[index_of_max],
             epoch_losses[index_of_max],
+            epoch_val_losses[index_of_max],
             entity_to_ids[index_of_max],
             rel_to_ids[index_of_max],
             eval_summaries[index_of_max],
@@ -144,6 +149,7 @@ class RandomSearch(HPOptimizer):
             rel_to_id: Dict[int, str],
             config: Dict,
             device,
+            batch_size,
             seed) -> HPOptimizerResult:
         return cls().optimize_hyperparams(
             mapped_train_triples=mapped_train_triples,
@@ -152,5 +158,6 @@ class RandomSearch(HPOptimizer):
             rel_to_id=rel_to_id,
             config=config,
             device=device,
+            batch_size=batch_size,
             seed=seed,
         )

@@ -37,7 +37,7 @@ def train_kge_model(
         device,
         seed: Optional[int] = None,
         tqdm_kwargs: Optional[Mapping[str, Any]] = None,
-) -> Tuple[Module, List[float]]:
+) -> Tuple[Module, List[float], List[float]]:
     """Train the model."""
     if pkc.CONV_E_NAME == kge_model.model_name:
         return _train_conv_e_model(
@@ -75,7 +75,7 @@ def _train_basic_model(
         device,
         seed: Optional[int] = None,
         tqdm_kwargs: Optional[Mapping[str, Any]] = None,
-) -> Tuple[Module, List[float]]:
+) -> Tuple[Module, List[float], List[float]]:
     """"""
     if seed is not None:
         np.random.seed(seed=seed)
@@ -86,7 +86,17 @@ def _train_basic_model(
     log.debug(f'****running model on {device}****')
 
     loss_per_epoch = []
-    num_pos_triples = pos_triples.shape[0]
+    valloss_per_epoch = []
+
+    num_all_triples = pos_triples.shape[0]
+    indices = np.arange(num_all_triples)
+    np.random.shuffle(indices)
+    pos_triples = pos_triples[indices]
+
+    train_triples = pos_triples[:-15000]
+    val_triples = pos_triples[-15000:]
+
+    num_train_triples = train_triples.shape[0]
     num_entities = all_entities.shape[0]
 
     start_training = timeit.default_timer()
@@ -95,14 +105,15 @@ def _train_basic_model(
     if tqdm_kwargs:
         _tqdm_kwargs.update(tqdm_kwargs)
 
-    for _ in trange(num_epochs, **_tqdm_kwargs):
-        indices = np.arange(num_pos_triples)
+    waited = 0
+    for k in trange(num_epochs, **_tqdm_kwargs):
+        indices = np.arange(num_train_triples)
         np.random.shuffle(indices)
-        pos_triples = pos_triples[indices]
-        pos_batches = _split_list_in_batches(input_list=pos_triples, batch_size=batch_size)
+        train_triples = train_triples[indices]
+        train_batches = _split_list_in_batches(input_list=train_triples, batch_size=batch_size)
         current_epoch_loss = 0.
 
-        for i, pos_batch in enumerate(pos_batches):
+        for i, pos_batch in enumerate(train_batches):
             current_batch_size = len(pos_batch)
             batch_subjs = pos_batch[:, 0:1]
             batch_relations = pos_batch[:, 1:2]
@@ -136,14 +147,59 @@ def _train_basic_model(
             loss.backward()
             optimizer.step()
 
+        with torch.no_grad():
+            val_batches = _split_list_in_batches(input_list=train_triples, batch_size=batch_size)
+            current_epoch_valloss = 0.
+
+            for i, pos_batch in enumerate(val_batches):
+                current_batch_size = len(pos_batch)
+                batch_subjs = pos_batch[:, 0:1]
+                batch_relations = pos_batch[:, 1:2]
+                batch_objs = pos_batch[:, 2:3]
+
+                num_subj_corrupt = len(pos_batch) // 2
+                num_obj_corrupt = len(pos_batch) - num_subj_corrupt
+                pos_batch = torch.tensor(pos_batch, dtype=torch.long, device=device)
+
+                corrupted_subj_indices = np.random.choice(np.arange(0, num_entities), size=num_subj_corrupt)
+                corrupted_subjects = np.reshape(all_entities[corrupted_subj_indices], newshape=(-1, 1))
+                subject_based_corrupted_triples = np.concatenate(
+                    [corrupted_subjects, batch_relations[:num_subj_corrupt], batch_objs[:num_subj_corrupt]], axis=1)
+
+                corrupted_obj_indices = np.random.choice(np.arange(0, num_entities), size=num_obj_corrupt)
+                corrupted_objects = np.reshape(all_entities[corrupted_obj_indices], newshape=(-1, 1))
+
+                object_based_corrupted_triples = np.concatenate(
+                    [batch_subjs[num_subj_corrupt:], batch_relations[num_subj_corrupt:], corrupted_objects], axis=1)
+
+                neg_batch = np.concatenate([subject_based_corrupted_triples, object_based_corrupted_triples], axis=0)
+
+                neg_batch = torch.tensor(neg_batch, dtype=torch.long, device=device)
+
+                loss = kge_model(pos_batch, neg_batch)
+                current_epoch_valloss += (loss.item() * current_batch_size)
+
+        if valloss_per_epoch:
+            if current_epoch_valloss / len(val_triples) > min(valloss_per_epoch):
+                waited += 1
+                if waited == 5:
+                    loss_per_epoch.append(current_epoch_loss / len(train_triples))
+                    valloss_per_epoch.append(current_epoch_valloss / len(val_triples))
+                    break
+            else:
+                waited = 0
+
         # log.info("Epoch %s took %s seconds \n" % (str(epoch), str(round(stop - start))))
         # Track epoch loss
-        loss_per_epoch.append(current_epoch_loss / len(pos_triples))
+        loss_per_epoch.append(current_epoch_loss / len(train_triples))
+        valloss_per_epoch.append(current_epoch_valloss / len(val_triples))
+        #log.info("Epoch {:2d}:   loss: {:0.2f}   val loss: {:0.2f}"
+        #         .format(k, loss_per_epoch[-1], valloss_per_epoch[-1]))
 
     stop_training = timeit.default_timer()
     log.debug("training took %.2fs seconds", stop_training - start_training)
 
-    return kge_model, loss_per_epoch
+    return kge_model, loss_per_epoch, valloss_per_epoch
 
 
 def _train_conv_e_model(
