@@ -51,13 +51,14 @@ class RandomSearch(HPOptimizer):
     def optimize_hyperparams(
             self,
             mapped_train_triples,
-            mapped_test_triples,
+            mapped_pos_test_triples,
+            mapped_neg_test_triples,
             entity_to_id,
             rel_to_id,
             config,
             device,
-            seed: Optional[int] = None,
-            k_evaluation: int = 10,
+            batch_size,
+            seed: Optional[int] = None
     ) -> HPOptimizerResult:
         if seed is not None:
             torch.manual_seed(config[pkc.SEED])
@@ -87,6 +88,7 @@ class RandomSearch(HPOptimizer):
             kge_model_config[pkc.NUM_RELATIONS]: int = len(rel_to_id)
             kge_model_config[pkc.SEED]: int = seed
 
+            print(kge_model_config)
             # Configure defined model
             kge_model: Module = get_kge_model(config=kge_model_config)
 
@@ -110,6 +112,7 @@ class RandomSearch(HPOptimizer):
 
             # Evaluate trained model
             metric_results = compute_metric_results(
+                metrics=[pkc.TRIPLE_PREDICTION],
                 all_entities=all_entities,
                 kg_embedding_model=trained_kge_model,
                 mapped_train_triples=mapped_train_triples,
@@ -121,7 +124,8 @@ class RandomSearch(HPOptimizer):
 
             # TODO: Define HPO metric
             eval_summaries.append(metric_results)
-
+            print(metric_results)
+                
             trained_kge_models.append(trained_kge_model)
             epoch_losses.append(epoch_loss)
             epoch_val_losses.append(val_loss)
@@ -144,7 +148,8 @@ class RandomSearch(HPOptimizer):
     @classmethod
     def run(cls,
             mapped_train_triples: np.ndarray,
-            mapped_test_triples: np.ndarray,
+            mapped_pos_test_triples: np.ndarray,
+            mapped_neg_test_triples: np.ndarray,
             entity_to_id: Dict[int, str],
             rel_to_id: Dict[int, str],
             config: Dict,
@@ -153,7 +158,8 @@ class RandomSearch(HPOptimizer):
             seed) -> HPOptimizerResult:
         return cls().optimize_hyperparams(
             mapped_train_triples=mapped_train_triples,
-            mapped_test_triples=mapped_test_triples,
+            mapped_pos_test_triples=mapped_pos_test_triples,
+            mapped_neg_test_triples=mapped_neg_test_triples,
             entity_to_id=entity_to_id,
             rel_to_id=rel_to_id,
             config=config,

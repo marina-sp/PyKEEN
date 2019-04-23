@@ -7,6 +7,8 @@ import timeit
 from tqdm import tqdm
 from dataclasses import dataclass
 from typing import Callable, Dict, Hashable, Iterable, List, Optional, Tuple
+from sklearn.metrics import precision_score, recall_score, f1_score, accuracy_score
+import pykeen.constants as pkc
 
 import numpy as np
 import torch
@@ -50,14 +52,21 @@ def _create_corrupted_triples(triple, all_entities, device):
     tuple_object_based = np.reshape(a=triple[0:2], newshape=(1, 2))
 
     # Copy current test tuple
-    tuples_subject_based = np.repeat(a=tuple_subject_based, repeats=candidate_entities_subject_based.shape[0],
+    tuples_subject_based = np.repeat(a=tuple_subject_based,
+                                     repeats=candidate_entities_subject_based.shape[0],
                                      axis=0)
-    tuples_object_based = np.repeat(a=tuple_object_based, repeats=candidate_entities_object_based.shape[0], axis=0)
+    tuples_object_based = np.repeat(a=tuple_object_based,
+                                    repeats=candidate_entities_object_based.shape[0],
+                                    axis=0)
 
-    corrupted_subject_based = np.concatenate([candidate_entities_subject_based, tuples_subject_based], axis=1)
+    corrupted_subject_based = np.concatenate([
+        candidate_entities_subject_based,
+        tuples_subject_based], axis=1)
     corrupted_subject_based = torch.tensor(corrupted_subject_based, dtype=torch.long, device=device)
 
-    corrupted_object_based = np.concatenate([tuples_object_based, candidate_entities_object_based], axis=1)
+    corrupted_object_based = np.concatenate([
+        tuples_object_based,
+        candidate_entities_object_based], axis=1)
     corrupted_object_based = torch.tensor(corrupted_object_based, dtype=torch.long, device=device)
 
     return corrupted_subject_based, corrupted_object_based
@@ -182,13 +191,19 @@ class MetricResults:
 
     mean_rank: float
     hits_at_k: Dict[int, float]
+    precision: float
+    recall: float
+    accuracy: float
+    fscore: float
 
 
 def compute_metric_results(
+        metrics,
         all_entities,
         kg_embedding_model,
         mapped_train_triples,
-        mapped_test_triples,
+        mapped_pos_test_triples,
+        mapped_neg_test_triples,
         batch_size,
         device,
         filter_neg_triples=False,
@@ -196,10 +211,12 @@ def compute_metric_results(
 ) -> MetricResults:
     """Compute the metric results.
 
+    :param metrics:
     :param all_entities:
     :param kg_embedding_model:
     :param mapped_train_triples:
-    :param mapped_test_triples:
+    :param mapped_pos_test_triples:
+    :param mapped_neg_test_triples:
     :param device:
     :param filter_neg_triples:
     :param ks:
@@ -207,70 +224,105 @@ def compute_metric_results(
     """
     start = timeit.default_timer()
 
-    ranks: List[int] = []
-    hits_at_k_values = {
-        k: []
-        for k in (ks or DEFAULT_HITS_AT_K)
-    }
     kg_embedding_model = kg_embedding_model.eval()
     kg_embedding_model = kg_embedding_model.to(device)
 
-    all_pos_triples = np.concatenate([mapped_train_triples, mapped_test_triples], axis=0)
-    all_pos_triples_hashed = np.apply_along_axis(_hash_triples, 1, all_pos_triples)
-
-    compute_rank_fct: Callable[..., Tuple[int, int]] = (
-        _compute_filtered_rank
-        if filter_neg_triples else
-        _compute_rank
+    results = MetricResults(
+        mean_rank=None,
+        hits_at_k=None,
+        precision=None,
+        recall=None,
+        accuracy=None,
+        fscore=None
     )
 
-    all_scores = np.ndarray((len(mapped_test_triples),1))
+    # todo: names to constants
+    if pkc.MEAN_RANK in metrics or pkc.HITS_AT_K in metrics:
+        ranks: List[int] = []
+        hits_at_k_values = {
+            k: []
+            for k in (ks or DEFAULT_HITS_AT_K)
+        }
 
-    all_triples = torch.tensor(mapped_test_triples, dtype=torch.long, device=device)
+        all_pos_triples = np.concatenate([mapped_train_triples, mapped_pos_test_triples], axis=0)
+        all_pos_triples_hashed = np.apply_along_axis(_hash_triples, 1, all_pos_triples)
 
-    # predict all triples
-    for i, batch in enumerate(_split_list_in_batches(all_triples, batch_size)):
-        predictions = kg_embedding_model.predict(batch)
-        all_scores[i*batch_size: (i+1)*batch_size] = predictions
-
-    # Corrupt triples
-    for i, pos_triple in enumerate(tqdm(mapped_test_triples)):
-        corrupted_subject_based, corrupted_object_based = _create_corrupted_triples(
-            triple=pos_triple,
-            all_entities=all_entities,
-            device=device,
+        compute_rank_fct: Callable[..., Tuple[int, int]] = (
+            _compute_filtered_rank
+            if filter_neg_triples else
+            _compute_rank
         )
 
-        rank_of_positive_subject_based, rank_of_positive_object_based = compute_rank_fct(
-            kg_embedding_model=kg_embedding_model,
-            score_of_positive=all_scores[i],
-            corrupted_subject_based=corrupted_subject_based,
-            corrupted_object_based=corrupted_object_based,
-            batch_size=batch_size,
-            device=device,
-            all_pos_triples_hashed=all_pos_triples_hashed,
-        )
+        all_scores = np.ndarray((len(mapped_pos_test_triples), 1))
 
-        ranks.append(1 / rank_of_positive_subject_based)
-        ranks.append(1 / rank_of_positive_object_based)
+        all_triples = torch.tensor(mapped_pos_test_triples, dtype=torch.long, device=device)
 
-        # Compute hits@k for k in {1,3,5,10}
-        update_hits_at_k(
-            hits_at_k_values,
-            rank_of_positive_subject_based=rank_of_positive_subject_based,
-            rank_of_positive_object_based=rank_of_positive_object_based,
-        )
+        # predict all triples
+        for i, batch in enumerate(_split_list_in_batches(all_triples, batch_size)):
+            predictions = kg_embedding_model.predict(batch)
+            all_scores[i*batch_size: (i+1)*batch_size] = predictions
 
-    mean_rank = float(np.mean(ranks))
-    hits_at_k: Dict[int, float] = {
-        k: np.mean(values)
-        for k, values in hits_at_k_values.items()
-    }
+        # Corrupt triples
+        for i, pos_triple in enumerate(tqdm(mapped_pos_test_triples)):
+            corrupted_subject_based, corrupted_object_based = _create_corrupted_triples(
+                triple=pos_triple,
+                all_entities=all_entities,
+                device=device,
+            )
+
+            rank_of_positive_subject_based, rank_of_positive_object_based = compute_rank_fct(
+                kg_embedding_model=kg_embedding_model,
+                score_of_positive=all_scores[i],
+                corrupted_subject_based=corrupted_subject_based,
+                corrupted_object_based=corrupted_object_based,
+                batch_size=batch_size,
+                device=device,
+                all_pos_triples_hashed=all_pos_triples_hashed,
+            )
+
+            ranks.append(1 / (rank_of_positive_subject_based+1))
+            ranks.append(1 / (rank_of_positive_object_based+1))
+
+            # Compute hits@k for k in {1,3,5,10}
+            update_hits_at_k(
+                hits_at_k_values,
+                rank_of_positive_subject_based=rank_of_positive_subject_based,
+                rank_of_positive_object_based=rank_of_positive_object_based,
+            )
+
+        results.mean_rank = float(np.mean(ranks))
+        results.hits_at_k = {
+            k: np.mean(values)
+            for k, values in hits_at_k_values.items()
+        }
+
+    if pkc.TRIPLE_PREDICTION in metrics:
+        if not len(mapped_neg_test_triples):
+            log.info("No negative test triples specified for the triple prediciton task.")
+            all_test_triples = mapped_pos_test_triples
+        else:
+            all_test_triples = np.concatenate([mapped_pos_test_triples, mapped_neg_test_triples])
+
+        y_true = [1]*len(mapped_pos_test_triples) + [0]*len(mapped_neg_test_triples)
+        y_true = np.array(y_true)
+
+        # predict all triples
+        all_scores = np.ndarray((len(all_test_triples), 1))
+        all_test_triples = torch.tensor(all_test_triples, dtype=torch.long, device=device)
+
+        for i, batch in enumerate(tqdm(_split_list_in_batches(all_test_triples, batch_size))):
+            predictions = kg_embedding_model.predict(batch)
+            all_scores[i * batch_size: (i + 1) * batch_size] = predictions
+
+        y_pred = (all_scores > 0.5) * 1
+        print(all_scores, y_pred)
+
+        results.precision = precision_score(y_true, y_pred)
+        results.recall = recall_score(y_true, y_pred)
+        results.accuracy = accuracy_score(y_true, y_pred)
+        results.fscore = f1_score(y_true, y_pred)
 
     stop = timeit.default_timer()
     log.info("Evaluation took %.2fs seconds", stop - start)
 
-    return MetricResults(
-        mean_rank=mean_rank,
-        hits_at_k=hits_at_k,
-    )
+    return results

@@ -58,7 +58,8 @@ class Pipeline(object):
         metric_results = None
 
         if self._use_hpo(self.config):  # Hyper-parameter optimization mode
-            mapped_pos_train_triples, mapped_pos_test_triples = self._get_train_and_test_triples()
+            mapped_pos_train_triples, mapped_pos_test_triples, mapped_neg_test_triples = \
+                self._get_train_and_test_triples()
 
             (trained_model,
              loss_per_epoch,
@@ -68,7 +69,8 @@ class Pipeline(object):
              metric_results,
              params) = RandomSearch.run(
                 mapped_train_triples=mapped_pos_train_triples,
-                mapped_test_triples=mapped_pos_test_triples,
+                mapped_pos_test_triples=mapped_pos_test_triples,
+                mapped_neg_test_triples=mapped_neg_test_triples,
                 entity_to_id=self.entity_label_to_id,
                 rel_to_id=self.relation_label_to_id,
                 config=self.config,
@@ -78,7 +80,8 @@ class Pipeline(object):
             )
         else:  # Training Mode
             if self.is_evaluation_required:
-                mapped_pos_train_triples, mapped_pos_test_triples = self._get_train_and_test_triples()
+                mapped_pos_train_triples, mapped_pos_test_triples, mapped_neg_test_triples =\
+                    self._get_train_and_test_triples()
             else:
                 mapped_pos_train_triples, mapped_pos_test_triples = self._get_train_triples(), None
 
@@ -116,10 +119,12 @@ class Pipeline(object):
                 log.info("-------------Start Evaluation-------------")
 
                 metric_results = compute_metric_results(
+                    metrics=self.config['metrics'],
                     all_entities=all_entities,
                     kg_embedding_model=kge_model,
                     mapped_train_triples=mapped_pos_train_triples,
-                    mapped_test_triples=mapped_pos_test_triples,
+                    mapped_pos_test_triples=mapped_pos_test_triples,
+                    mapped_neg_test_triples=mapped_neg_test_triples,
                     batch_size=self.config['test_batch_size'],
                     device=self.device,
                     filter_neg_triples=self.config[pkc.FILTER_NEG_TRIPLES],
@@ -159,10 +164,67 @@ class Pipeline(object):
             params=params,
         )
 
-    def _get_train_and_test_triples(self) -> Tuple[np.ndarray, np.ndarray]:
+    def evaluate(self, trained_model, test_path, neg_test_path,
+                 metrics=[pkc.MEAN_RANK, pkc.HITS_AT_K, pkc.TRIPLE_PREDICTION]):
+        # TODO: optimize run to call this function
+
+        all_entities = np.array(list(self.entity_label_to_id.values()))
+
+        self.config[pkc.TEST_SET_PATH] = test_path
+        if pkc.TRIPLE_PREDICTION in metrics:
+            self.config[pkc.NEG_TEST_PATH] = neg_test_path
+        mapped_pos_train_triples, mapped_pos_test_triples, mapped_neg_test_triples =\
+            self._get_train_and_test_triples()
+
+        log.info("-------------Start Evaluation-------------")
+
+        metric_results = compute_metric_results(
+            metrics=metrics,
+            all_entities=all_entities,
+            kg_embedding_model=trained_model,
+            mapped_train_triples=mapped_pos_train_triples,
+            mapped_pos_test_triples=mapped_pos_test_triples,
+            mapped_neg_test_triples=mapped_neg_test_triples,
+            batch_size=self.config['test_batch_size'],
+            device=self.device,
+            filter_neg_triples=self.config[pkc.FILTER_NEG_TRIPLES],
+        )
+
+        # Prepare Output
+        relation_id_to_label = {
+            value: key for
+            key, value in self.relation_label_to_id.items()
+        }
+
+        if self.config[pkc.KG_EMBEDDING_MODEL_NAME] in (pkc.SE_NAME, pkc.UM_NAME):
+            relation_label_to_embedding = None
+        else:
+            relation_label_to_embedding = {
+                relation_id_to_label[relation_id]: embedding.detach().cpu().numpy()
+                for relation_id, embedding in enumerate(trained_model.relation_embeddings.weight)
+            }
+
+        return _make_results(
+            trained_model=trained_model,
+            loss_per_epoch=None,
+            valloss_per_epoch=None,
+            entity_to_embedding=None,
+            relation_to_embedding=relation_label_to_embedding,
+            metric_results=metric_results,
+            entity_to_id=self.entity_label_to_id,
+            rel_to_id=self.relation_label_to_id,
+            params=self.config,
+        )
+
+    def _get_train_and_test_triples(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         train_pos = load_data(self.config[pkc.TRAINING_SET_PATH])
+        if pkc.NEG_TEST_PATH in self.config:
+            test_neg = load_data(self.config[pkc.NEG_TEST_PATH])
+        else:
+            test_neg = None
 
         if pkc.TEST_SET_PATH in self.config:
+            # todo: nice handling of negative inputs
             test_pos = load_data(self.config[pkc.TEST_SET_PATH])
         else:
             train_pos, test_pos = train_test_split(
@@ -171,11 +233,14 @@ class Pipeline(object):
                 random_state=self.seed,
             )
 
-        return self._handle_train_and_test(train_pos, test_pos)
+        return self._handle_train_and_test(train_pos, test_pos, test_neg)
 
-    def _handle_train_and_test(self, train_pos, test_pos) -> Tuple[np.ndarray, np.ndarray]:
+    def _handle_train_and_test(self, train_pos, test_pos, test_neg) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """"""
-        all_triples: np.ndarray = np.concatenate([train_pos, test_pos], axis=0)
+        if test_neg is not None:
+            all_triples: np.ndarray = np.concatenate([train_pos, test_pos, test_neg], axis=0)
+        else:
+            all_triples: np.ndarray = np.concatenate([train_pos, test_pos], axis=0)
         self.entity_label_to_id, self.relation_label_to_id = create_mappings(triples=all_triples)
 
         mapped_pos_train_triples, _, _ = create_mapped_triples(
@@ -190,7 +255,16 @@ class Pipeline(object):
             relation_label_to_id=self.relation_label_to_id,
         )
 
-        return mapped_pos_train_triples, mapped_pos_test_triples
+        if test_neg is not None:
+            mapped_neg_test_triples, _, _ = create_mapped_triples(
+                triples=test_neg,
+                entity_label_to_id=self.entity_label_to_id,
+                relation_label_to_id=self.relation_label_to_id,
+            )
+        else:
+            mapped_neg_test_triples = np.array([])
+
+        return mapped_pos_train_triples, mapped_pos_test_triples, mapped_neg_test_triples
 
     def _get_train_triples(self):
         train_pos = load_data(self.config[pkc.TRAINING_SET_PATH])
@@ -270,6 +344,10 @@ def _make_results(
         results[pkc.EVAL_SUMMARY] = {
             pkc.MEAN_RANK: metric_results.mean_rank,
             pkc.HITS_AT_K: metric_results.hits_at_k,
+            "precision": metric_results.precision,  # todo: metrics names
+            "recall": metric_results.recall,
+            "accuracy": metric_results.accuracy,
+            "f1_score": metric_results.fscore
         }
     results[pkc.ENTITY_TO_ID] = entity_to_id
     results[pkc.RELATION_TO_ID] = rel_to_id
