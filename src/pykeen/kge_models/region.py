@@ -66,7 +66,7 @@ class Region(BaseModule):
         # Embeddings
         self.l_p_norm_entities = config.lp_norm
         self.relation_embeddings = nn.Embedding(self.num_relations, self.embedding_dim)
-        self.relation_regions = nn.Embedding(self.num_relations, 1)
+        self.relation_regions = nn.Embedding(self.num_relations, self.embedding_dim)
         self.reg_l = config.reg_lambda
         self.init_radius = config.radius_init
 
@@ -122,11 +122,11 @@ class Region(BaseModule):
         positive_scores = - torch.log(pos)
         neg = 1 - self._score_triples(batch_negatives)
         if (pos < 0).any() or (neg < 0).any():
-            print("negative input to log function")
+            log.debug("negative input to log function")
         if (pos == 0).any():
-            print("zero input from pos to log function")
+            log.debug("zero input from pos to log function")
         if (neg == 0).any():
-            print("zero input from neg to log function")
+            log.debug("zero input from neg to log function")
         negative_scores = - torch.log(neg)
         loss = self._compute_loss(positive_scores=positive_scores, negative_scores=negative_scores)
         return loss
@@ -168,8 +168,8 @@ class Region(BaseModule):
         :return: Tensor of dimension batch_size containing the scores for each batch element
         """
         m_x    = (head_embeddings + relation_embeddings - tail_embeddings).unsqueeze(-1)
-        sigmas = torch.log(1 + torch.exp(regions)).unsqueeze(-1).unsqueeze(-1)
-        region_m = (sigmas * torch.eye(self.embedding_dim, device=self.device)).squeeze(1)
+        sigmas = torch.log(1 + torch.exp(regions)).unsqueeze(-1)
+        region_m = (sigmas * torch.eye(self.embedding_dim, device=self.device))
         dists  = torch.matmul(
             torch.matmul(m_x.transpose(-1, -2), region_m),
             m_x).squeeze(-1)
@@ -177,7 +177,6 @@ class Region(BaseModule):
         if (dists == 0).any():
             print("zero distances in loss computation")
         probs = 1.0 / (1 + dists)
-        #print("Shapes", m_x.shape, sigma, A.shape, dists.shape, probs.shape)
         #print("Dist values: ", dists[:10])
         #print("Probs values: ", probs[:10])
         #print("M x: ", m_x)
@@ -196,4 +195,4 @@ class Region(BaseModule):
         return self.relation_embeddings(relations).view(-1, self.embedding_dim)
 
     def _get_relation_regions(self, relations):
-        return self.relation_regions(relations).view(-1, 1)
+        return self.relation_regions(relations).view(-1, self.embedding_dim)
