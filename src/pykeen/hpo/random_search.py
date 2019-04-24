@@ -57,7 +57,6 @@ class RandomSearch(HPOptimizer):
             rel_to_id,
             config,
             device,
-            batch_size,
             seed: Optional[int] = None
     ) -> HPOptimizerResult:
         if seed is not None:
@@ -118,7 +117,7 @@ class RandomSearch(HPOptimizer):
                 mapped_train_triples=mapped_train_triples,
                 mapped_pos_test_triples=mapped_pos_test_triples,
                 mapped_neg_test_triples=mapped_neg_test_triples,
-                batch_size=kge_model_config[pkc.BATCH_SIZE],
+                batch_size=kge_model_config['test_batch_size'],
                 device=device,
             )
 
@@ -154,7 +153,6 @@ class RandomSearch(HPOptimizer):
             rel_to_id: Dict[int, str],
             config: Dict,
             device,
-            batch_size,
             seed) -> HPOptimizerResult:
         return cls().optimize_hyperparams(
             mapped_train_triples=mapped_train_triples,
@@ -164,6 +162,5 @@ class RandomSearch(HPOptimizer):
             rel_to_id=rel_to_id,
             config=config,
             device=device,
-            batch_size=batch_size,
             seed=seed,
         )

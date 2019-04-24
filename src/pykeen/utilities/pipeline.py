@@ -75,7 +75,6 @@ class Pipeline(object):
                 rel_to_id=self.relation_label_to_id,
                 config=self.config,
                 device=self.device,
-                batch_size=self.config[pkc.BATCH_SIZE],
                 seed=self.seed,
             )
         else:  # Training Mode
