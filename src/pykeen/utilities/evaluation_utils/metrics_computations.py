@@ -310,12 +310,12 @@ def compute_metric_results(
         all_scores = np.ndarray((len(all_test_triples), 1))
         all_test_triples = torch.tensor(all_test_triples, dtype=torch.long, device=device)
 
-        for i, batch in enumerate(tqdm(_split_list_in_batches(all_test_triples, batch_size))):
+        for i, batch in enumerate(_split_list_in_batches(all_test_triples, batch_size)):
             predictions = kg_embedding_model.predict(batch)
             all_scores[i * batch_size: (i + 1) * batch_size] = predictions
 
         y_pred = (all_scores > 0.5) * 1
-        print(all_scores, y_pred)
+        #print(all_scores, y_pred)
 
         results.precision = precision_score(y_true, y_pred)
         results.recall = recall_score(y_true, y_pred)

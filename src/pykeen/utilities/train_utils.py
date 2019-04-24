@@ -123,6 +123,7 @@ def _train_basic_model(
             num_obj_corrupt = len(pos_batch) - num_subj_corrupt
             pos_batch = torch.tensor(pos_batch, dtype=torch.long, device=device)
 
+            # todo: filter correct triples from neg batch
             corrupted_subj_indices = np.random.choice(np.arange(0, num_entities), size=num_subj_corrupt)
             corrupted_subjects = np.reshape(all_entities[corrupted_subj_indices], newshape=(-1, 1))
             subject_based_corrupted_triples = np.concatenate(
