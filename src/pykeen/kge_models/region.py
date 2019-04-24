@@ -84,7 +84,7 @@ class Region(BaseModule):
         else:
             self.region_dim = self.embedding_dim
 
-        self.relation_regions = nn.Embedding(self.num_relations, self.embedding_dim)
+        self.relation_regions = nn.Embedding(self.num_relations, self.region_dim)
         self.reg_l = config.reg_lambda
         self.init_radius = config.radius_init
 
@@ -237,6 +237,7 @@ class Region(BaseModule):
         """
         m_x    = (head_embeddings + relation_embeddings - tail_embeddings).unsqueeze(-1)
         sigmas = torch.log(1 + torch.exp(regions)).unsqueeze(-1)
+        print(m_x.shape, regions.shape, sigmas.shape)
         region_m = (sigmas * torch.eye(self.embedding_dim, device=self.device))
         dists  = torch.matmul(
             torch.matmul(m_x.transpose(-1, -2), region_m),
@@ -265,6 +266,8 @@ class Region(BaseModule):
     def _get_relation_regions(self, relations):
         if self.region_dim == 1:
             diag_vectors = torch.tensor([[1.0]*self.embedding_dim]*relations.shape[0], device=self.device)
-            return self.relation_regions(relations) * diag_vectors
+            values = self.relation_regions(relations).view(-1,1)
+            print(diag_vectors.shape, values.shape)
+            return values * diag_vectors
         else:
             return self.relation_regions(relations).view(-1, self.region_dim)
