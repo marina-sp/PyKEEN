@@ -99,6 +99,8 @@ class Pipeline(object):
             batch_size = self.config[pkc.BATCH_SIZE]
             num_epochs = self.config[pkc.NUM_EPOCHS]
             learning_rate = self.config[pkc.LEARNING_RATE]
+            neg_factor = self.config.get('neg_factor', 1)  # todo: add constants
+            single_pass = self.config.get('single_pass', False)
 
             log.info("-------------Train KG Embeddings-------------")
             trained_model, loss_per_epoch, valloss_per_epoch = train_kge_model(
@@ -109,6 +111,8 @@ class Pipeline(object):
                 batch_size=batch_size,
                 pos_triples=mapped_pos_train_triples,
                 device=self.device,
+                neg_factor=neg_factor,
+                single_pass=single_pass,
                 seed=self.seed,
             )
 

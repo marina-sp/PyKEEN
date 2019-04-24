@@ -35,6 +35,8 @@ def train_kge_model(
         batch_size,
         pos_triples,
         device,
+        neg_factor=1,
+        single_pass=False,
         seed: Optional[int] = None,
         tqdm_kwargs: Optional[Mapping[str, Any]] = None,
 ) -> Tuple[Module, List[float], List[float]]:
@@ -61,9 +63,10 @@ def train_kge_model(
         pos_triples=pos_triples,
         device=device,
         seed=seed,
+        neg_factor=neg_factor,
+        single_pass=single_pass,
         tqdm_kwargs=tqdm_kwargs,
     )
-
 
 def _train_basic_model(
         kge_model: Module,
@@ -72,7 +75,9 @@ def _train_basic_model(
         num_epochs,
         batch_size,
         pos_triples,
+        neg_factor,
         device,
+        single_pass,
         seed: Optional[int] = None,
         tqdm_kwargs: Optional[Mapping[str, Any]] = None,
 ) -> Tuple[Module, List[float], List[float]]:
@@ -81,6 +86,10 @@ def _train_basic_model(
         np.random.seed(seed=seed)
 
     kge_model = kge_model.to(device)
+    if single_pass:
+        batch_size = batch_size // (neg_factor + 1)
+    else:
+        neg_factor = 1
 
     optimizer = optim.SGD(kge_model.parameters(), lr=learning_rate)
     log.debug(f'****running model on {device}****')
@@ -119,9 +128,14 @@ def _train_basic_model(
             batch_relations = pos_batch[:, 1:2]
             batch_objs = pos_batch[:, 2:3]
 
-            num_subj_corrupt = len(pos_batch) // 2
-            num_obj_corrupt = len(pos_batch) - num_subj_corrupt
+            num_subj_corrupt = len(pos_batch)*neg_factor // 2
+            num_obj_corrupt = len(pos_batch)*neg_factor - num_subj_corrupt
             pos_batch = torch.tensor(pos_batch, dtype=torch.long, device=device)
+
+            if neg_factor != 1:
+                batch_subjs = np.concatenate([batch_subjs for _ in range(neg_factor)])
+                batch_relations = np.concatenate([batch_relations for _ in range(neg_factor)])
+                batch_objs = np.concatenate([batch_objs for _ in range(neg_factor)])
 
             # todo: filter correct triples from neg batch
             corrupted_subj_indices = np.random.choice(np.arange(0, num_entities), size=num_subj_corrupt)
@@ -142,7 +156,14 @@ def _train_basic_model(
             # Recall that torch *accumulates* gradients. Before passing in a
             # new instance, you need to zero out the gradients from the old instance
             optimizer.zero_grad()
-            loss = kge_model(pos_batch, neg_batch)
+
+            if single_pass:
+                batch = torch.cat((pos_batch, neg_batch))
+                target = torch.tensor([1]*len(pos_batch) + [-1]*len(neg_batch), dtype=torch.float, device=device)
+                loss = kge_model(batch, target)
+            else:
+                loss = kge_model(pos_batch, neg_batch)
+
             current_epoch_loss += (loss.item() * current_batch_size)
 
             loss.backward()
@@ -158,9 +179,14 @@ def _train_basic_model(
                 batch_relations = pos_batch[:, 1:2]
                 batch_objs = pos_batch[:, 2:3]
 
-                num_subj_corrupt = len(pos_batch) // 2
-                num_obj_corrupt = len(pos_batch) - num_subj_corrupt
+                num_subj_corrupt = len(pos_batch) * neg_factor // 2
+                num_obj_corrupt = len(pos_batch) * neg_factor - num_subj_corrupt
                 pos_batch = torch.tensor(pos_batch, dtype=torch.long, device=device)
+
+                if neg_factor != 1:
+                    batch_subjs = np.concatenate([batch_subjs for _ in range(neg_factor)])
+                    batch_relations = np.concatenate([batch_relations for _ in range(neg_factor)])
+                    batch_objs = np.concatenate([batch_objs for _ in range(neg_factor)])
 
                 corrupted_subj_indices = np.random.choice(np.arange(0, num_entities), size=num_subj_corrupt)
                 corrupted_subjects = np.reshape(all_entities[corrupted_subj_indices], newshape=(-1, 1))
@@ -177,7 +203,14 @@ def _train_basic_model(
 
                 neg_batch = torch.tensor(neg_batch, dtype=torch.long, device=device)
 
-                loss = kge_model(pos_batch, neg_batch)
+                if single_pass:
+                    batch = torch.cat((pos_batch, neg_batch))
+                    target = torch.tensor([1] * len(pos_batch) + [-1] * len(neg_batch), dtype=torch.float,
+                                          device=device)
+                    loss = kge_model(batch, target)
+                else:
+                    loss = kge_model(pos_batch, neg_batch)
+
                 current_epoch_valloss += (loss.item() * current_batch_size)
 
         if valloss_per_epoch:
@@ -201,7 +234,6 @@ def _train_basic_model(
     log.debug("training took %.2fs seconds", stop_training - start_training)
 
     return kge_model, loss_per_epoch, valloss_per_epoch
-
 
 def _train_conv_e_model(
         kge_model: ConvE,

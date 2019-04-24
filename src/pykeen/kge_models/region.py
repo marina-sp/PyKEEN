@@ -28,6 +28,10 @@ class RegionConfig:
     lp_norm: str
     radius_init: float
     reg_lambda: float
+    loss_type: str
+    single_pass: bool
+    neg_factor: float
+    region_type: str
 
     @classmethod
     def from_dict(cls, config: Dict) -> 'RegionConfig':
@@ -35,7 +39,11 @@ class RegionConfig:
         return cls(
             lp_norm=config[NORM_FOR_NORMALIZATION_OF_ENTITIES],
             radius_init=config[RADIUS_INITIAL_VALUE],
-            reg_lambda=config['reg_lambda']
+            reg_lambda=config['reg_lambda'],
+            loss_type=config['loss_type'],
+            single_pass=config.get('single_pass', False),
+            neg_factor=config.get('neg_factor', 1),
+            region_type=config.get('region_type', 'sphere')
         )
 
 
@@ -56,7 +64,12 @@ class Region(BaseModule):
     margin_ranking_loss_size_average: bool = True
     hyper_params = BaseModule.hyper_params + [
         NORM_FOR_NORMALIZATION_OF_ENTITIES,
-        RADIUS_INITIAL_VALUE
+        RADIUS_INITIAL_VALUE,
+        'reg_lambda',
+        'loss_type',
+        'single_pass',
+        'neg_factor',
+        'region_type'
     ]
 
     def __init__(self, config: Dict) -> None:
@@ -66,15 +79,31 @@ class Region(BaseModule):
         # Embeddings
         self.l_p_norm_entities = config.lp_norm
         self.relation_embeddings = nn.Embedding(self.num_relations, self.embedding_dim)
+        if config.region_type == 'sphere':
+            self.region_dim = 1
+        else:
+            self.region_dim = self.embedding_dim
+
         self.relation_regions = nn.Embedding(self.num_relations, self.embedding_dim)
         self.reg_l = config.reg_lambda
         self.init_radius = config.radius_init
 
         # TODO: add config parameter and move to base class
-        self.criterion = nn.MarginRankingLoss(
-            margin=self.margin_loss,
-            size_average=self.margin_ranking_loss_size_average
-        )
+        self.loss_type = config.loss_type
+        if config.loss_type == 'MRL':
+            self.criterion = nn.MarginRankingLoss(
+                margin=self.margin_loss,
+                size_average=self.margin_ranking_loss_size_average
+            )
+        elif config.loss_type == 'NLL':
+            self.criterion = nn.NLLLoss(
+                size_average=self.margin_ranking_loss_size_average
+            )  # todo: add weights for pos and neg classes
+
+        if config.single_pass:
+            self.forward = self._forward_single
+        else:
+            self.forward = self._forward_split
 
         # Output type (used for scoring)
         self.prob_mode = True
@@ -111,7 +140,7 @@ class Region(BaseModule):
         scores = self._score_triples(triples)
         return scores.detach().cpu().numpy()
 
-    def forward(self, batch_positives, batch_negatives):
+    def _forward_split(self, batch_positives, batch_negatives):
         # Normalize embeddings of entities
         norms = torch.norm(self.entity_embeddings.weight, p=self.l_p_norm_entities, dim=1).data
         self.entity_embeddings.weight.data = self.entity_embeddings.weight.data.div(
@@ -128,15 +157,54 @@ class Region(BaseModule):
         if (neg == 0).any():
             log.debug("zero input from neg to log function")
         negative_scores = - torch.log(neg)
-        loss = self._compute_loss(positive_scores=positive_scores, negative_scores=negative_scores)
+        loss = self._compute_split_loss(positive_scores=positive_scores, negative_scores=negative_scores)
         return loss
 
-    def _compute_loss(self, positive_scores, negative_scores):
+    def _compute_split_loss(self, positive_scores, negative_scores):
         y = np.repeat([-1], repeats=positive_scores.shape[0])
         y = torch.tensor(y, dtype=torch.float, device=self.device)
 
         loss = self.criterion(positive_scores, - negative_scores, y)
         #print("loss: %0.2f"%loss)
+        # TODO: regularization once or for every element
+        # todo: if here -- then once a batch -- normalized to batch size?
+        loss = loss.add(
+            self.reg_l *
+            torch.pow(
+                torch.norm(self.relation_regions.weight.data.view(-1), 2),
+                2))
+        #print("reg loss: %0.2f"%loss)
+        #print(positive_scores, negative_scores, loss, loss_)
+        return loss
+
+    def _forward_single(self, batch, targets):
+        # Normalize embeddings of entities
+        norms = torch.norm(self.entity_embeddings.weight, p=self.l_p_norm_entities, dim=1).data
+        self.entity_embeddings.weight.data = self.entity_embeddings.weight.data.div(
+            norms.view(self.num_entities, 1).expand_as(self.entity_embeddings.weight))
+        # TODO: what is going on
+
+        scores = self._score_triples(batch)
+        loss = self._compute_single_loss(scores, targets)
+        return loss
+
+    def _compute_single_loss(self, scores_1d, targets):
+        if self.loss_type == 'MRL':
+            x = np.repeat([0.5], repeats=scores_1d.shape[0])
+            x = torch.tensor(x, dtype=torch.float, device=self.device)
+            targets = torch.tensor(targets, dtype = torch.float, device=self.device)
+            loss = self.criterion(scores_1d.squeeze(-1), x, targets)
+
+            #print("loss: %0.2f"%loss)
+        elif self.loss_type == 'NLL':
+            pos_mask = torch.tensor((targets == 1), dtype=torch.float, device=self.device).unsqueeze(1)
+            scores_pos = scores_1d * pos_mask + (1 - scores_1d) * (1 - pos_mask)
+            scores_neg = 1 - scores_pos
+            scores_2d = torch.cat((scores_pos, scores_neg), dim=1)
+            scores_2d = torch.log(scores_2d)
+            targets = torch.tensor(np.ones(targets.shape[0]), dtype=torch.long, device=self.device)
+            loss = self.criterion(scores_2d, targets)
+
         # TODO: regularization once or for every element
         # todo: if here -- then once a batch -- normalized to batch size?
         loss = loss.add(
@@ -195,4 +263,8 @@ class Region(BaseModule):
         return self.relation_embeddings(relations).view(-1, self.embedding_dim)
 
     def _get_relation_regions(self, relations):
-        return self.relation_regions(relations).view(-1, self.embedding_dim)
+        if self.region_dim == 1:
+            diag_vectors = torch.tensor([[1.0]*self.embedding_dim]*relations.shape[0], device=self.device)
+            return self.relation_regions(relations) * diag_vectors
+        else:
+            return self.relation_regions(relations).view(-1, self.region_dim)

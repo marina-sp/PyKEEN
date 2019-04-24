@@ -106,6 +106,8 @@ class RandomSearch(HPOptimizer):
                 pos_triples=mapped_train_triples,
                 seed=seed,
                 device=device,
+                neg_factor=kge_model_config.get('neg_factor', 1),
+                single_pass=kge_model_config.get('single_pass', False),
                 tqdm_kwargs=dict(leave=False),
             )
 
