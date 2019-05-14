@@ -97,6 +97,7 @@ class Pipeline(object):
             kge_model: Module = get_kge_model(config=self.config)
 
             batch_size = self.config[pkc.BATCH_SIZE]
+            test_batch_size = self.config.get(pkc.TEST_BATCH_SIZE, batch_size)
             num_epochs = self.config[pkc.NUM_EPOCHS]
             learning_rate = self.config[pkc.LEARNING_RATE]
             neg_factor = self.config.get('neg_factor', 1)  # todo: add constants
@@ -109,11 +110,16 @@ class Pipeline(object):
                 learning_rate=learning_rate,
                 num_epochs=num_epochs,
                 batch_size=batch_size,
-                pos_triples=mapped_pos_train_triples,
+                test_batch_size=test_batch_size,
+                train_triples=mapped_pos_train_triples,
+                train_types=train_types,
+                val_triples=mapped_pos_test_triples,
+                val_types=val_types,
                 device=self.device,
                 neg_factor=neg_factor,
                 single_pass=single_pass,
                 seed=self.seed,
+                model_dir=output_directory
             )
 
             params = self.config
@@ -128,10 +134,12 @@ class Pipeline(object):
                     mapped_train_triples=mapped_pos_train_triples,
                     mapped_pos_test_triples=mapped_pos_test_triples,
                     mapped_neg_test_triples=mapped_neg_test_triples,
-                    batch_size=self.config['test_batch_size'],
+                    batch_size=test_batch_size,
                     device=self.device,
                     filter_neg_triples=self.config[pkc.FILTER_NEG_TRIPLES],
                 )
+
+            search_summary = None
 
         # Prepare Output
         entity_id_to_label = {
@@ -165,6 +173,7 @@ class Pipeline(object):
             entity_to_id=self.entity_label_to_id,
             rel_to_id=self.relation_label_to_id,
             params=params,
+            search_summary=search_summary
         )
 
     def evaluate(self, trained_model, test_path, neg_test_path,
@@ -217,6 +226,7 @@ class Pipeline(object):
             entity_to_id=self.entity_label_to_id,
             rel_to_id=self.relation_label_to_id,
             params=self.config,
+            search_summary=None
         )
 
     def _get_train_and_test_triples(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -246,20 +256,23 @@ class Pipeline(object):
             all_triples: np.ndarray = np.concatenate([train_pos, test_pos], axis=0)
         self.entity_label_to_id, self.relation_label_to_id = create_mappings(triples=all_triples)
 
-        mapped_pos_train_triples, _, _ = create_mapped_triples(
+        #log.debug("map train")
+        mapped_pos_train_triples, _, _, pos_train_types = create_mapped_triples(
             triples=train_pos,
             entity_label_to_id=self.entity_label_to_id,
             relation_label_to_id=self.relation_label_to_id,
         )
 
-        mapped_pos_test_triples, _, _ = create_mapped_triples(
+        #log.debug("map test")
+        mapped_pos_test_triples, _, _, pos_test_types = create_mapped_triples(
             triples=test_pos,
             entity_label_to_id=self.entity_label_to_id,
             relation_label_to_id=self.relation_label_to_id,
         )
 
         if test_neg is not None:
-            mapped_neg_test_triples, _, _ = create_mapped_triples(
+            #log.debug("map negative test")
+            mapped_neg_test_triples, _, _, _ = create_mapped_triples(
                 triples=test_neg,
                 entity_label_to_id=self.entity_label_to_id,
                 relation_label_to_id=self.relation_label_to_id,
@@ -267,14 +280,14 @@ class Pipeline(object):
         else:
             mapped_neg_test_triples = np.array([])
 
-        return mapped_pos_train_triples, mapped_pos_test_triples, mapped_neg_test_triples
+        return mapped_pos_train_triples, mapped_pos_test_triples, mapped_neg_test_triples, pos_train_types, pos_test_types
 
     def _get_train_triples(self):
         train_pos = load_data(self.config[pkc.TRAINING_SET_PATH])
 
         self.entity_label_to_id, self.relation_label_to_id = create_mappings(triples=train_pos)
 
-        mapped_pos_train_triples, _, _ = create_mapped_triples(
+        mapped_pos_train_triples, _, _, _ = create_mapped_triples(
             triples=train_pos,
             entity_label_to_id=self.entity_label_to_id,
             relation_label_to_id=self.relation_label_to_id,
@@ -335,7 +348,8 @@ def _make_results(
         metric_results: Optional[MetricResults],
         entity_to_id,
         rel_to_id,
-        params
+        params,
+        search_summary
 ) -> Dict:
     results = OrderedDict()
     results[pkc.TRAINED_MODEL] = trained_model
@@ -355,4 +369,5 @@ def _make_results(
     results[pkc.ENTITY_TO_ID] = entity_to_id
     results[pkc.RELATION_TO_ID] = rel_to_id
     results[pkc.FINAL_CONFIGURATION] = params
+    results['search_summary'] = search_summary
     return results
