@@ -40,7 +40,7 @@ class RegionConfig:
             lp_norm=config[NORM_FOR_NORMALIZATION_OF_ENTITIES],
             radius_init=config[RADIUS_INITIAL_VALUE],
             reg_lambda=config['reg_lambda'],
-            loss_type=config['loss_type'],
+            loss_type=config.get('loss_type', 'NLL'),
             single_pass=config.get('single_pass', False),
             neg_factor=config.get('neg_factor', 1),
             region_type=config.get('region_type', 'sphere')
@@ -93,11 +93,11 @@ class Region(BaseModule):
         if config.loss_type == 'MRL':
             self.criterion = nn.MarginRankingLoss(
                 margin=self.margin_loss,
-                size_average=self.margin_ranking_loss_size_average
+                size_average= False #  self.margin_ranking_loss_size_average
             )
         elif config.loss_type == 'NLL':
             self.criterion = nn.NLLLoss(
-                size_average=self.margin_ranking_loss_size_average
+                size_average= False #  self.margin_ranking_loss_size_average
             )  # todo: add weights for pos and neg classes
 
         if config.single_pass:
@@ -149,7 +149,8 @@ class Region(BaseModule):
 
         pos = self._score_triples(batch_positives)
         positive_scores = - torch.log(pos)
-        neg = 1 - self._score_triples(batch_negatives)
+
+        neg = self._score_triples(batch_negatives)
         if (pos < 0).any() or (neg < 0).any():
             log.debug("negative input to log function")
         if (pos == 0).any():
@@ -164,12 +165,12 @@ class Region(BaseModule):
         y = np.repeat([-1], repeats=positive_scores.shape[0])
         y = torch.tensor(y, dtype=torch.float, device=self.device)
 
-        loss = self.criterion(positive_scores, - negative_scores, y)
+        loss = self.criterion(positive_scores, negative_scores, y)
         #print("loss: %0.2f"%loss)
         # TODO: regularization once or for every element
         # todo: if here -- then once a batch -- normalized to batch size?
         loss = loss.add(
-            self.reg_l *
+            self.reg_l * len(positive_scores) *
             torch.pow(
                 torch.norm(self.relation_regions.weight.data.view(-1), 2),
                 2))
@@ -192,23 +193,20 @@ class Region(BaseModule):
         if self.loss_type == 'MRL':
             x = np.repeat([0.5], repeats=scores_1d.shape[0])
             x = torch.tensor(x, dtype=torch.float, device=self.device)
-            targets = torch.tensor(targets, dtype = torch.float, device=self.device)
-            loss = self.criterion(scores_1d.squeeze(-1), x, targets)
+            targets = torch.tensor(targets, dtype=torch.float, device=self.device)
+            loss = self.criterion(scores_1d, x.unsqueeze(-1), targets)
 
             #print("loss: %0.2f"%loss)
         elif self.loss_type == 'NLL':
             pos_mask = torch.tensor((targets == 1), dtype=torch.float, device=self.device).unsqueeze(1)
             scores_pos = scores_1d * pos_mask + (1 - scores_1d) * (1 - pos_mask)
-            scores_neg = 1 - scores_pos
-            scores_2d = torch.cat((scores_pos, scores_neg), dim=1)
-            scores_2d = torch.log(scores_2d)
-            targets = torch.tensor(np.ones(targets.shape[0]), dtype=torch.long, device=self.device)
-            loss = self.criterion(scores_2d, targets)
+            targets = torch.tensor(np.zeros(targets.shape[0]), dtype=torch.long, device=self.device)
+            loss = self.criterion(torch.log(scores_pos), targets)
 
         # TODO: regularization once or for every element
         # todo: if here -- then once a batch -- normalized to batch size?
         loss = loss.add(
-            self.reg_l *
+            self.reg_l * len(targets) *
             torch.pow(
                 torch.norm(self.relation_regions.weight.data.view(-1), 2),
                 2))
@@ -237,7 +235,7 @@ class Region(BaseModule):
         """
         m_x    = (head_embeddings + relation_embeddings - tail_embeddings).unsqueeze(-1)
         sigmas = torch.log(1 + torch.exp(regions)).unsqueeze(-1)
-        print(m_x.shape, regions.shape, sigmas.shape)
+        #print(m_x.shape, regions.shape, sigmas.shape)
         region_m = (sigmas * torch.eye(self.embedding_dim, device=self.device))
         dists  = torch.matmul(
             torch.matmul(m_x.transpose(-1, -2), region_m),
@@ -245,7 +243,7 @@ class Region(BaseModule):
         # TODO: try other activation, like tanh instead of sigmoid
         if (dists == 0).any():
             print("zero distances in loss computation")
-        probs = 1.0 / (1 + dists)
+        probs = 1.0 / (1 + dists + 1e-10)
         #print("Dist values: ", dists[:10])
         #print("Probs values: ", probs[:10])
         #print("M x: ", m_x)

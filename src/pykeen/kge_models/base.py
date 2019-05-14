@@ -3,7 +3,7 @@
 """Utilities for getting and initializing KGE models."""
 
 from dataclasses import dataclass
-from typing import Dict, Optional, Union
+from typing import Dict, Optional, Union, List
 
 import torch
 from torch import nn
@@ -24,7 +24,7 @@ class BaseConfig:
     """Configuration for KEEN models."""
 
     try_gpu: bool
-    margin_loss: float
+    margin_loss: Union[float, List]
     number_entities: int
     number_relations: int
     embedding_dimension: int
@@ -64,13 +64,17 @@ class BaseModule(nn.Module):
 
         # Output type (distance or probability)
         self.prob_mode = False
+        self.single_pass = False
+        self.neg_factor = 1
 
         # Loss
         self.margin_loss = config.margin_loss
-        self.criterion = nn.MarginRankingLoss(
-            margin=self.margin_loss,
-            size_average=self.margin_ranking_loss_size_average,
-        )
+
+        if type(self.margin_loss) != list:
+            self.criterion = nn.MarginRankingLoss(
+                margin=self.margin_loss,
+                size_average=False  #  self.margin_ranking_loss_size_average,
+            )
 
         # Entity dimensions
         #: The number of entities in the knowledge graph
