@@ -68,6 +68,7 @@ GPU = 'gpu'
 
 # ML params
 BATCH_SIZE = 'batch_size'
+TEST_BATCH_SIZE = 'test_batch_size'
 VOCAB_SIZE = 'vocab_size'
 EMBEDDING_DIM = 'embedding_dim'
 RELATION_EMBEDDING_DIM = 'relation_embedding_dim'

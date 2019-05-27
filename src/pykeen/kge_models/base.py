@@ -84,7 +84,6 @@ class BaseModule(nn.Module):
         #: The dimension of the embeddings to generate
         self.embedding_dim = config.embedding_dimension
 
-
         self.entity_embeddings = nn.Embedding(
             self.num_entities,
             self.embedding_dim,

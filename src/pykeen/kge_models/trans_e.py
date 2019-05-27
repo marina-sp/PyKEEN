@@ -51,7 +51,7 @@ class TransE(BaseModule):
     """
 
     model_name = TRANS_E_NAME
-    margin_ranking_loss_size_average: bool = True
+    margin_ranking_loss_size_average: bool = False
     hyper_params = BaseModule.hyper_params + [SCORING_FUNCTION_NORM, NORM_FOR_NORMALIZATION_OF_ENTITIES]
 
     def __init__(self, config: Dict) -> None:

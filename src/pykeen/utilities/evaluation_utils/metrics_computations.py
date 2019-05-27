@@ -152,7 +152,7 @@ def _compute_rank(
     for i, batch in enumerate(_split_list_in_batches(
             torch.cat([corrupted_subject_based, corrupted_object_based], dim=0),
             batch_size)):
-        corrupted_scores[i * batch_size: (i + 1) * batch_size] = kg_embedding_model.predict(batch)
+        corrupted_scores[i * batch_size: (i + 1) * batch_size] = kg_embedding_model.predict(batch).reshape(-1,1)
 
     scores_of_corrupted_subjects = corrupted_scores[:len(corrupted_subject_based)]
     scores_of_corrupted_objects = corrupted_scores[len(corrupted_subject_based):]
@@ -206,6 +206,7 @@ def compute_metric_results(
         mapped_neg_test_triples,
         batch_size,
         device,
+        threshold_search=False,
         filter_neg_triples=False,
         ks: Optional[List[int]] = None
 ) -> MetricResults:
@@ -259,7 +260,8 @@ def compute_metric_results(
 
         # predict all triples
         for i, batch in enumerate(_split_list_in_batches(all_triples, batch_size)):
-            predictions = kg_embedding_model.predict(batch)
+            predictions = kg_embedding_model.predict(batch).reshape(-1, 1)
+            #print(predictions.shape)
             all_scores[i*batch_size: (i+1)*batch_size] = predictions
 
         # Corrupt triples
@@ -297,7 +299,7 @@ def compute_metric_results(
         }
 
     if pkc.TRIPLE_PREDICTION in metrics:
-        if not len(mapped_neg_test_triples):
+        if mapped_neg_test_triples is None:
             log.info("No negative test triples specified for the triple prediciton task.")
             all_test_triples = mapped_pos_test_triples
         else:
@@ -311,16 +313,32 @@ def compute_metric_results(
         all_test_triples = torch.tensor(all_test_triples, dtype=torch.long, device=device)
 
         for i, batch in enumerate(_split_list_in_batches(all_test_triples, batch_size)):
-            predictions = kg_embedding_model.predict(batch)
+            predictions = kg_embedding_model.predict(batch).reshape(-1, 1)
             all_scores[i * batch_size: (i + 1) * batch_size] = predictions
 
-        y_pred = (all_scores > 0.5) * 1
-        #print(all_scores, y_pred)
+        if threshold_search:
+            best_acc = -1
+            step = (max(all_scores) - min(all_scores))/100
+            for th in np.arange(min(all_scores), max(all_scores)+step, step):
+                if kg_embedding_model.prob_mode:
+                    y = 1 * (all_scores >= th)
+                else:
+                    y = 1 * (all_scores <= th)
+                acc = accuracy_score(y_true, y)
+                if acc > best_acc:
+                    best_acc = acc
+                    threshold = th
+        else:
+            threshold = 0.5
 
+        y_pred =(1 * (all_scores >= threshold) * kg_embedding_model.prob_mode
+                 + 1 * (all_scores <= threshold) * (not kg_embedding_model.prob_mode))
         results.precision = precision_score(y_true, y_pred)
         results.recall = recall_score(y_true, y_pred)
         results.accuracy = accuracy_score(y_true, y_pred)
         results.fscore = f1_score(y_true, y_pred)
+
+        log.info('Best accuracy {:0.2f} achieved on threshold: {:0.2f}'.format(results.accuracy, threshold))
 
     stop = timeit.default_timer()
     log.info("Evaluation took %.2fs seconds", stop - start)

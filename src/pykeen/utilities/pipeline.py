@@ -5,6 +5,8 @@
 import logging
 from collections import OrderedDict
 from typing import Dict, Iterable, Mapping, Optional, Tuple, Union
+import json
+import os
 
 import numpy as np
 import rdflib
@@ -43,7 +45,8 @@ class Pipeline(object):
         self.device = torch.device(self.device_name)
 
         # set num of entities
-        _ = self._get_train_and_test_triples()
+        #_ = self._get_train_and_test_triples()
+
 
     @staticmethod
     def _use_hpo(config):
@@ -53,7 +56,7 @@ class Pipeline(object):
     def is_evaluation_required(self) -> bool:
         return pkc.TEST_SET_PATH in self.config or pkc.TEST_SET_RATIO in self.config
 
-    def run(self) -> Mapping:
+    def run(self, output_directory) -> Mapping:
         """Run this pipeline."""
         metric_results = None
 
@@ -67,7 +70,8 @@ class Pipeline(object):
              entity_label_to_embedding,
              relation_label_to_embedding,
              metric_results,
-             params) = RandomSearch.run(
+             params,
+             search_summary) = RandomSearch.run(
                 mapped_train_triples=mapped_pos_train_triples,
                 mapped_pos_test_triples=mapped_pos_test_triples,
                 mapped_neg_test_triples=mapped_neg_test_triples,
@@ -79,7 +83,7 @@ class Pipeline(object):
             )
         else:  # Training Mode
             if self.is_evaluation_required:
-                mapped_pos_train_triples, mapped_pos_test_triples, mapped_neg_test_triples =\
+                mapped_pos_train_triples, mapped_pos_test_triples, mapped_neg_test_triples, train_types, val_types =\
                     self._get_train_and_test_triples()
             else:
                 mapped_pos_train_triples, mapped_pos_test_triples = self._get_train_triples(), None
@@ -95,6 +99,7 @@ class Pipeline(object):
 
             print(self.config)
             kge_model: Module = get_kge_model(config=self.config)
+            #if self.config.get('continue', False):
 
             batch_size = self.config[pkc.BATCH_SIZE]
             test_batch_size = self.config.get(pkc.TEST_BATCH_SIZE, batch_size)
@@ -102,9 +107,13 @@ class Pipeline(object):
             learning_rate = self.config[pkc.LEARNING_RATE]
             neg_factor = self.config.get('neg_factor', 1)  # todo: add constants
             single_pass = self.config.get('single_pass', False)
+            es_metric = self.config.get('es_metric', pkc.MEAN_RANK)
+
+            json.dump(self.entity_label_to_id, open(os.path.join(output_directory, 'entity_to_id.json'),'w'))
+            json.dump(self.relation_label_to_id, open(os.path.join(output_directory, 'relation_to_id.json'),'w'))
 
             log.info("-------------Train KG Embeddings-------------")
-            trained_model, loss_per_epoch, valloss_per_epoch = train_kge_model(
+            trained_model, loss_per_epoch, valloss_per_epoch, metric_per_epoch = train_kge_model(
                 kge_model=kge_model,
                 all_entities=all_entities,
                 learning_rate=learning_rate,
@@ -115,6 +124,8 @@ class Pipeline(object):
                 train_types=train_types,
                 val_triples=mapped_pos_test_triples,
                 val_types=val_types,
+                neg_val_triples=mapped_neg_test_triples,
+                es_metric=es_metric,
                 device=self.device,
                 neg_factor=neg_factor,
                 single_pass=single_pass,
@@ -167,6 +178,7 @@ class Pipeline(object):
             trained_model=trained_model,
             loss_per_epoch=loss_per_epoch,
             valloss_per_epoch=valloss_per_epoch,
+            metric_per_epoch=metric_per_epoch,
             entity_to_embedding=entity_label_to_embedding,
             relation_to_embedding=relation_label_to_embedding,
             metric_results=metric_results,
@@ -176,17 +188,18 @@ class Pipeline(object):
             search_summary=search_summary
         )
 
-    def evaluate(self, trained_model, test_path, neg_test_path,
-                 metrics=[pkc.MEAN_RANK, pkc.HITS_AT_K, pkc.TRIPLE_PREDICTION]):
+    def evaluate(self, trained_model, test_path, neg_test_path=None,
+                 metrics=[pkc.MEAN_RANK, pkc.HITS_AT_K, pkc.TRIPLE_PREDICTION],
+                 threshold_search=False):
         # TODO: optimize run to call this function
+        self.config[pkc.TEST_SET_PATH] = test_path
+        if pkc.TRIPLE_PREDICTION in metrics and neg_test_path is not None:
+            self.config[pkc.NEG_TEST_PATH] = neg_test_path
+
+        mapped_pos_train_triples, mapped_pos_test_triples, mapped_neg_test_triples, _ ,_  = \
+                self._get_train_and_test_triples()
 
         all_entities = np.array(list(self.entity_label_to_id.values()))
-
-        self.config[pkc.TEST_SET_PATH] = test_path
-        if pkc.TRIPLE_PREDICTION in metrics:
-            self.config[pkc.NEG_TEST_PATH] = neg_test_path
-        mapped_pos_train_triples, mapped_pos_test_triples, mapped_neg_test_triples =\
-            self._get_train_and_test_triples()
 
         log.info("-------------Start Evaluation-------------")
 
@@ -200,7 +213,9 @@ class Pipeline(object):
             batch_size=self.config['test_batch_size'],
             device=self.device,
             filter_neg_triples=self.config[pkc.FILTER_NEG_TRIPLES],
+            threshold_search=threshold_search
         )
+        log.info(str(metric_results))
 
         # Prepare Output
         relation_id_to_label = {
@@ -220,6 +235,7 @@ class Pipeline(object):
             trained_model=trained_model,
             loss_per_epoch=None,
             valloss_per_epoch=None,
+            metric_per_epoch=None,
             entity_to_embedding=None,
             relation_to_embedding=relation_label_to_embedding,
             metric_results=metric_results,
@@ -229,8 +245,9 @@ class Pipeline(object):
             search_summary=None
         )
 
-    def _get_train_and_test_triples(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def _get_train_and_test_triples(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray,np.ndarray,np.ndarray]:
         train_pos = load_data(self.config[pkc.TRAINING_SET_PATH])
+
         if pkc.NEG_TEST_PATH in self.config:
             test_neg = load_data(self.config[pkc.NEG_TEST_PATH])
         else:
@@ -248,13 +265,28 @@ class Pipeline(object):
 
         return self._handle_train_and_test(train_pos, test_pos, test_neg)
 
-    def _handle_train_and_test(self, train_pos, test_pos, test_neg) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+
+
+    def _handle_train_and_test(self, train_pos, test_pos, test_neg) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """"""
-        if test_neg is not None:
-            all_triples: np.ndarray = np.concatenate([train_pos, test_pos, test_neg], axis=0)
-        else:
-            all_triples: np.ndarray = np.concatenate([train_pos, test_pos], axis=0)
-        self.entity_label_to_id, self.relation_label_to_id = create_mappings(triples=all_triples)
+        if not self.relation_label_to_id or not self.entity_label_to_id:
+            if 'mapping_path' in self.config:
+                # read mapping from file
+                with open(os.path.join(self.config['mapping_path'], 'entity_to_id.json'), 'r') as f:
+                    self.entity_label_to_id = json.load(f)
+                with open(os.path.join(self.config['mapping_path'], 'relation_to_id.json'), 'r') as f:
+                    self.relation_label_to_id = json.load(f)
+                log.debug("Reading the label mappings...")
+
+            else:
+                # derive mapping from the data
+                if test_neg is not None:
+                    all_triples: np.ndarray = np.concatenate([train_pos, test_pos, test_neg], axis=0)
+                else:
+                    all_triples: np.ndarray = np.concatenate([train_pos, test_pos], axis=0)
+
+                log.debug("Creating new label mappings...")
+                self.entity_label_to_id, self.relation_label_to_id = create_mappings(triples=all_triples)
 
         #log.debug("map train")
         mapped_pos_train_triples, _, _, pos_train_types = create_mapped_triples(
@@ -285,7 +317,20 @@ class Pipeline(object):
     def _get_train_triples(self):
         train_pos = load_data(self.config[pkc.TRAINING_SET_PATH])
 
-        self.entity_label_to_id, self.relation_label_to_id = create_mappings(triples=train_pos)
+        if not self.relation_label_to_id or not self.entity_label_to_id:
+
+            if 'mapping_path' in self.config:
+                # read mapping from file
+                with open(os.path.join(self.config['mapping_path'], 'entity_to_id.json'), 'r') as f:
+                    self.entity_label_to_id = json.load(f)
+                with open(os.path.join(self.config['mapping_path'], 'relation_to_id.json'), 'r') as f:
+                    self.relation_label_to_id = json.load(f)
+                log.debug("Reading the label mappings...")
+
+            else:
+                # derive mapping from the data
+                log.debug("Creating new label mappings...")
+                self.entity_label_to_id, self.relation_label_to_id = create_mappings(triples=train_pos)
 
         mapped_pos_train_triples, _, _, _ = create_mapped_triples(
             triples=train_pos,
@@ -318,6 +363,7 @@ def _load_data_helper(path: str) -> np.ndarray:
             dtype=str,
             comments='@Comment@ Subject Predicate Object',
             delimiter='\t',
+            encoding='utf-8'
         ), newshape=(-1, 3))
 
     if path.endswith('.nt'):
@@ -343,6 +389,7 @@ def _make_results(
         trained_model,
         loss_per_epoch,
         valloss_per_epoch,
+        metric_per_epoch,
         entity_to_embedding: Mapping[str, np.ndarray],
         relation_to_embedding: Mapping[str, np.ndarray],
         metric_results: Optional[MetricResults],
@@ -355,6 +402,7 @@ def _make_results(
     results[pkc.TRAINED_MODEL] = trained_model
     results[pkc.LOSSES] = loss_per_epoch
     results[pkc.VAL_LOSSES] = valloss_per_epoch
+    results['metric_per_epoch'] = metric_per_epoch
     results[pkc.ENTITY_TO_EMBEDDING]: Mapping[str, np.ndarray] = entity_to_embedding
     results[pkc.RELATION_TO_EMBEDDING]: Mapping[str, np.ndarray] = relation_to_embedding
     if metric_results is not None:
