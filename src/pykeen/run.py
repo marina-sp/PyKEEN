@@ -118,6 +118,11 @@ def export_experimental_artifacts(
         with open(os.path.join(output_directory, 'evaluation_summary.json'), 'w') as file:
             json.dump(eval_summary, file, indent=2)
 
+    search_summary = results.get('search_summary')
+    if search_summary is not None:
+        with open(os.path.join(output_directory, 'search_summary.json'), 'w') as file:
+            json.dump(search_summary, file, indent=2)
+
     # Save trained model
     torch.save(
         results[TRAINED_MODEL].state_dict(),
@@ -141,7 +146,7 @@ def run(
     config['pykeen-version'] = VERSION
 
     pipeline = Pipeline(config=config)
-    results = pipeline.run()
+    results = pipeline.run(output_directory)
 
     # Export experimental artifacts
     export_experimental_artifacts(
