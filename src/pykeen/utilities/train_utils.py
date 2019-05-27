@@ -10,6 +10,8 @@ from typing import Any, List, Mapping, Optional, Tuple
 import numpy as np
 import torch
 import torch.optim as optim
+from torch.optim.lr_scheduler import ReduceLROnPlateau
+
 from sklearn.utils import shuffle
 from torch.nn import Module
 from tqdm import trange
@@ -115,6 +117,7 @@ def _train_basic_model(
         neg_factor = 1
 
     optimizer = optim.SGD(kge_model.parameters(), lr=learning_rate)
+    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=10, verbose=True)
     log.debug(f'****running model on {device}****')
 
     loss_per_epoch = []
@@ -268,6 +271,7 @@ def _train_basic_model(
                 current_epoch_valloss += loss.item()
 
             stop = timeit.default_timer()
+            scheduler.step(current_epoch_valloss)
 
             if k % 10 == 0 or current_epoch_valloss < min(valloss_per_epoch):
                 # validation metric
