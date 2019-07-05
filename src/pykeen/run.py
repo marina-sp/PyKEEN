@@ -101,6 +101,21 @@ def export_experimental_artifacts(
                 sort_keys=True,
             )
 
+    if results.get('relation_to_radius') is not None:
+        with open(os.path.join(output_directory, 'relations_to_radius.pkl'), 'wb') as file:
+            pickle.dump(results['relation_to_radius'], file, protocol=pickle.HIGHEST_PROTOCOL)
+
+        with open(os.path.join(output_directory, 'relations_to_radius.json'), 'w') as file:
+            json.dump(
+                {
+                    key: list(map(float, array))
+                    for key, array in results['relation_to_radius'].items()
+                },
+                file,
+                indent=2,
+                sort_keys=True,
+            )
+
     with open(os.path.join(output_directory, 'entity_to_id.json'), 'w') as file:
         json.dump(results[ENTITY_TO_ID], file, indent=2, sort_keys=True)
 

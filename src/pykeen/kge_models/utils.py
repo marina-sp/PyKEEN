@@ -10,7 +10,7 @@ from pykeen.constants import KG_EMBEDDING_MODEL_NAME
 from pykeen.kge_models import (
     ConvE, DistMult, ERMLP, RESCAL, StructuredEmbedding,
     TransD, TransE, TransH, TransR, UnstructuredModel,
-    Region
+    Region, KG2E
 )
 
 __all__ = [
@@ -30,7 +30,8 @@ KGE_MODELS = {
     ERMLP.model_name: ERMLP,
     RESCAL.model_name: RESCAL,
     ConvE.model_name: ConvE,
-    Region.model_name: Region
+    Region.model_name: Region,
+    KG2E.model_name: KG2E
 }
 
 

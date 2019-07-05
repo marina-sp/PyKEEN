@@ -265,7 +265,7 @@ def compute_metric_results(
             all_scores[i*batch_size: (i+1)*batch_size] = predictions
 
         # Corrupt triples
-        for i, pos_triple in enumerate(tqdm(mapped_pos_test_triples)):
+        for i, pos_triple in enumerate(mapped_pos_test_triples):
             corrupted_subject_based, corrupted_object_based = _create_corrupted_triples(
                 triple=pos_triple,
                 all_entities=all_entities,
@@ -309,38 +309,74 @@ def compute_metric_results(
         y_true = np.array(y_true)
 
         # predict all triples
-        all_scores = np.ndarray((len(all_test_triples), 1))
+        eval_scores = np.ndarray((len(all_test_triples), 1))
         all_test_triples = torch.tensor(all_test_triples, dtype=torch.long, device=device)
 
         for i, batch in enumerate(_split_list_in_batches(all_test_triples, batch_size)):
             predictions = kg_embedding_model.predict(batch).reshape(-1, 1)
-            all_scores[i * batch_size: (i + 1) * batch_size] = predictions
+            eval_scores[i * batch_size: (i + 1) * batch_size] = predictions
+
+        # shuffle
+        n_objects = len(all_test_triples)
+        shuffle_idx = torch.randperm(n_objects)
+        y_true = y_true[shuffle_idx]
+        eval_scores = eval_scores[shuffle_idx]
+        all_test_triples = all_test_triples.cpu().detach().numpy()[shuffle_idx]
 
         if threshold_search:
-            best_acc = -1
-            step = (max(all_scores) - min(all_scores))/100
-            for th in np.arange(min(all_scores), max(all_scores)+step, step):
-                if kg_embedding_model.prob_mode:
-                    y = 1 * (all_scores >= th)
-                else:
-                    y = 1 * (all_scores <= th)
-                acc = accuracy_score(y_true, y)
-                if acc > best_acc:
-                    best_acc = acc
-                    threshold = th
-        else:
-            threshold = 0.5
+            search_scores = eval_scores[:n_objects // 2]
+            y_search = y_true[:n_objects // 2]
+            search_relations = all_test_triples[:n_objects // 2, 1]
+            eval_scores = eval_scores[n_objects // 2:]
+            y_true = y_true[n_objects // 2:]
+            eval_relations = all_test_triples[n_objects // 2:, 1]
 
-        y_pred =(1 * (all_scores >= threshold) * kg_embedding_model.prob_mode
-                 + 1 * (all_scores <= threshold) * (not kg_embedding_model.prob_mode))
+            if kg_embedding_model.single_threshold:
+                kg_embedding_model.relation_thresholds[:] = find_threshold_for_data(
+                    search_scores,
+                    y_search,
+                    kg_embedding_model.prob_mode)
+            else:
+                kg_embedding_model.relation_thresholds[:] = search_scores.mean()
+                for r_id in set(search_relations):
+                    kg_embedding_model.relation_thresholds[r_id] = find_threshold_for_data(
+                        search_scores[search_relations == r_id],
+                        y_search[search_relations == r_id],
+                        kg_embedding_model.prob_mode
+                    )
+        else:
+            eval_relations = all_test_triples[:, 1]
+
+        y_pred = predict_with_thresholds(eval_scores, eval_relations,
+                                         kg_embedding_model.relation_thresholds, kg_embedding_model.prob_mode)
         results.precision = precision_score(y_true, y_pred)
         results.recall = recall_score(y_true, y_pred)
         results.accuracy = accuracy_score(y_true, y_pred)
         results.fscore = f1_score(y_true, y_pred)
 
-        log.info('Best accuracy {:0.2f} achieved on threshold: {:0.2f}'.format(results.accuracy, threshold))
+        log.info('Best accuracy {:0.2f} achieved on threshold: {:0.2f}'.format(results.accuracy, kg_embedding_model.relation_thresholds.mean()))
 
     stop = timeit.default_timer()
     log.info("Evaluation took %.2fs seconds", stop - start)
 
     return results
+
+def find_threshold_for_data(scores, y_true, prob_mode):
+    best_acc = -1
+    step = (max(scores) * 1.1 - min(scores)) / 100
+    for th in np.arange(min(scores), max(scores) + step, step):
+        y = 1 * (scores >= th) if prob_mode else 1 * (scores <= th)
+        acc = accuracy_score(y_true, y)
+        if acc > best_acc:
+            best_acc = acc
+            threshold = th
+    return threshold
+
+def predict_with_thresholds(scores, relations, thresholds, prob_mode):
+    y_pred = np.ndarray((len(scores), 1), dtype=int)
+    for r_id in set(relations):
+        mask = relations == r_id
+        if mask.any():
+            th = thresholds[r_id]
+            y_pred[mask] = 1 * (scores[mask] >= th) if prob_mode else 1 * (scores[mask] <= th)
+    return y_pred

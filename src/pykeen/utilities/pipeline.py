@@ -61,25 +61,29 @@ class Pipeline(object):
         metric_results = None
 
         if self._use_hpo(self.config):  # Hyper-parameter optimization mode
-            mapped_pos_train_triples, mapped_pos_test_triples, mapped_neg_test_triples = \
+            mapped_pos_train_triples, mapped_pos_test_triples, mapped_neg_test_triples, train_types, val_types = \
                 self._get_train_and_test_triples()
 
             (trained_model,
              loss_per_epoch,
              valloss_per_epoch,
+             metric_per_epoch,
              entity_label_to_embedding,
              relation_label_to_embedding,
              metric_results,
              params,
              search_summary) = RandomSearch.run(
                 mapped_train_triples=mapped_pos_train_triples,
+                train_types=train_types,
                 mapped_pos_test_triples=mapped_pos_test_triples,
+                test_types=val_types,
                 mapped_neg_test_triples=mapped_neg_test_triples,
                 entity_to_id=self.entity_label_to_id,
                 rel_to_id=self.relation_label_to_id,
                 config=self.config,
                 device=self.device,
                 seed=self.seed,
+                model_dir=output_directory,
             )
         else:  # Training Mode
             if self.is_evaluation_required:
@@ -101,6 +105,7 @@ class Pipeline(object):
             kge_model: Module = get_kge_model(config=self.config)
             #if self.config.get('continue', False):
 
+            all_relations = np.array(list(self.relation_label_to_id.values())) if self.config['corrupt_relations'] else None
             batch_size = self.config[pkc.BATCH_SIZE]
             test_batch_size = self.config.get(pkc.TEST_BATCH_SIZE, batch_size)
             num_epochs = self.config[pkc.NUM_EPOCHS]
@@ -116,6 +121,7 @@ class Pipeline(object):
             trained_model, loss_per_epoch, valloss_per_epoch, metric_per_epoch = train_kge_model(
                 kge_model=kge_model,
                 all_entities=all_entities,
+                all_relations=all_relations,
                 learning_rate=learning_rate,
                 num_epochs=num_epochs,
                 batch_size=batch_size,
@@ -148,6 +154,7 @@ class Pipeline(object):
                     batch_size=test_batch_size,
                     device=self.device,
                     filter_neg_triples=self.config[pkc.FILTER_NEG_TRIPLES],
+                    threshold_search=True
                 )
 
             search_summary = None
@@ -168,10 +175,23 @@ class Pipeline(object):
 
         if self.config[pkc.KG_EMBEDDING_MODEL_NAME] in (pkc.SE_NAME, pkc.UM_NAME):
             relation_label_to_embedding = None
+        elif self.config[pkc.KG_EMBEDDING_MODEL_NAME] in ('kg2e'):
+            relation_label_to_embedding = {
+                relation_id_to_label[relation_id]: embedding.detach().cpu().numpy()
+                for relation_id, embedding in enumerate(trained_model.rel_mean.weight)
+            }
         else:
             relation_label_to_embedding = {
                 relation_id_to_label[relation_id]: embedding.detach().cpu().numpy()
                 for relation_id, embedding in enumerate(trained_model.relation_embeddings.weight)
+            }
+
+        if self.config[pkc.KG_EMBEDDING_MODEL_NAME] != pkc.REGION_NAME:
+            relation_label_to_region = None
+        else:
+            relation_label_to_region = {
+                relation_id_to_label[relation_id]: embedding.detach().cpu().numpy()
+                for relation_id, embedding in enumerate(trained_model.relation_regions.weight)
             }
 
         return _make_results(
@@ -185,7 +205,8 @@ class Pipeline(object):
             entity_to_id=self.entity_label_to_id,
             rel_to_id=self.relation_label_to_id,
             params=params,
-            search_summary=search_summary
+            search_summary=search_summary,
+            radius=relation_label_to_region
         )
 
     def evaluate(self, trained_model, test_path, neg_test_path=None,
@@ -218,12 +239,22 @@ class Pipeline(object):
         log.info(str(metric_results))
 
         # Prepare Output
+        entity_id_to_label = {
+            value: key
+            for key, value in self.entity_label_to_id.items()
+        }
+
         relation_id_to_label = {
             value: key for
             key, value in self.relation_label_to_id.items()
         }
 
-        if self.config[pkc.KG_EMBEDDING_MODEL_NAME] in (pkc.SE_NAME, pkc.UM_NAME):
+        entity_label_to_embedding = {
+            entity_id_to_label[entity_id]: embedding.detach().cpu().numpy()
+            for entity_id, embedding in enumerate(trained_model.entity_embeddings.weight)
+        }
+
+        if self.config[pkc.KG_EMBEDDING_MODEL_NAME] in (pkc.SE_NAME, pkc.UM_NAME, 'kg2e'):
             relation_label_to_embedding = None
         else:
             relation_label_to_embedding = {
@@ -231,18 +262,27 @@ class Pipeline(object):
                 for relation_id, embedding in enumerate(trained_model.relation_embeddings.weight)
             }
 
+        if self.config[pkc.KG_EMBEDDING_MODEL_NAME] != pkc.REGION_NAME:
+            relation_label_to_region = None
+        else:
+            relation_label_to_region = {
+                relation_id_to_label[relation_id]: embedding.detach().cpu().numpy()
+                for relation_id, embedding in enumerate(trained_model.relation_regions.weight)
+            }
+
         return _make_results(
             trained_model=trained_model,
             loss_per_epoch=None,
             valloss_per_epoch=None,
             metric_per_epoch=None,
-            entity_to_embedding=None,
+            entity_to_embedding=entity_label_to_embedding,
             relation_to_embedding=relation_label_to_embedding,
             metric_results=metric_results,
             entity_to_id=self.entity_label_to_id,
             rel_to_id=self.relation_label_to_id,
             params=self.config,
-            search_summary=None
+            search_summary=None,
+            radius=relation_label_to_region
         )
 
     def _get_train_and_test_triples(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray,np.ndarray,np.ndarray]:
@@ -396,7 +436,8 @@ def _make_results(
         entity_to_id,
         rel_to_id,
         params,
-        search_summary
+        search_summary,
+        radius,
 ) -> Dict:
     results = OrderedDict()
     results[pkc.TRAINED_MODEL] = trained_model
@@ -405,6 +446,8 @@ def _make_results(
     results['metric_per_epoch'] = metric_per_epoch
     results[pkc.ENTITY_TO_EMBEDDING]: Mapping[str, np.ndarray] = entity_to_embedding
     results[pkc.RELATION_TO_EMBEDDING]: Mapping[str, np.ndarray] = relation_to_embedding
+    if trained_model.model_name == pkc.REGION_NAME:
+        results['relation_to_radius'] = radius
     if metric_results is not None:
         results[pkc.EVAL_SUMMARY] = {
             pkc.MEAN_RANK: metric_results.mean_rank,

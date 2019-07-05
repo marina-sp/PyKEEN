@@ -7,6 +7,7 @@ from typing import Dict, Optional, Union, List
 
 import torch
 from torch import nn
+import numpy as np
 
 from pykeen.constants import (
     EMBEDDING_DIM, GPU, LEARNING_RATE, MARGIN_LOSS, NUM_ENTITIES, NUM_RELATIONS, PREFERRED_DEVICE,
@@ -28,6 +29,7 @@ class BaseConfig:
     number_entities: int
     number_relations: int
     embedding_dimension: int
+    corrupt_relations: bool
 
     def get_device(self):
         """Get the Torch device to use."""
@@ -42,6 +44,7 @@ class BaseConfig:
             number_entities=config[NUM_ENTITIES],
             number_relations=config[NUM_RELATIONS],
             embedding_dimension=config[EMBEDDING_DIM],
+            corrupt_relations=config.get('corrupt_relations', False)
         )
 
 
@@ -51,7 +54,8 @@ class BaseModule(nn.Module):
     margin_ranking_loss_size_average: bool = ...
     entity_embedding_max_norm: Optional[int] = None
     entity_embedding_norm_type: int = 2
-    hyper_params = [EMBEDDING_DIM, MARGIN_LOSS, LEARNING_RATE]
+    hyper_params = [EMBEDDING_DIM, MARGIN_LOSS, LEARNING_RATE, 'corrupt_relations']
+    single_threshold = False
 
     def __init__(self, config: Union[Dict, BaseConfig]) -> None:
         super().__init__()
@@ -91,6 +95,8 @@ class BaseModule(nn.Module):
             max_norm=self.entity_embedding_max_norm,
         )
 
+        self.relation_thresholds = np.ndarray((self.num_relations,))
+
     def __init_subclass__(cls, **kwargs):  # noqa: D105
         if not getattr(cls, 'model_name', None):
             raise TypeError('missing model_name class attribute')
@@ -98,6 +104,8 @@ class BaseModule(nn.Module):
     def _get_entity_embeddings(self, entities):
         return self.entity_embeddings(entities).view(-1, self.embedding_dim)
 
+    def _normalize(self):
+        return
 
 def slice_triples(triples):
     """Get the heads, relations, and tails from a matrix of triples."""
